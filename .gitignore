@@ -1,0 +1,29 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$.py.class
+
+# Virtual environment
+venv/
+.venv/
+.venv312/
+
+# Environment variables
+.env
+
+# IDE related
+.vscode/
+.idea/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Python cache
+*.egg-info/
+.cache/
+
+# Pytest cache
+.pytest_cache/
+/run_server.onefile-build/
+/dist/
