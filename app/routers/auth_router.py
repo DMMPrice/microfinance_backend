@@ -17,7 +17,7 @@ from app.utils.auth import get_current_user  # your JWT dependency
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
-def create_access_token(data: dict, expires_minutes: int = 60):
+def create_access_token(data: dict, expires_minutes: int = 600):
     expire = datetime.utcnow() + timedelta(minutes=expires_minutes)
     data.update({"exp": expire})
     return jwt.encode(data, JWT_SECRET, algorithm=JWT_ALGO)
