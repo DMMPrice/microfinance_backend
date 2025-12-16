@@ -2,7 +2,7 @@
 
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 
 from app.utils.database import get_db
@@ -11,7 +11,12 @@ from app.models.employee_model import Employee
 from app.models.roles_model import Role
 from app.models.group_model import Group
 from app.utils.auth import get_current_user
-from app.schemas import LoanOfficerCreate, LoanOfficerOut, LoanOfficerGroupSummaryOut
+from app.schemas import (
+    LoanOfficerCreate,
+    LoanOfficerOut,
+    LoanOfficerGroupSummaryOut,
+)
+from app.schemas.loan_officer_schemas import LoanOfficerWithEmployeeOut
 
 router = APIRouter(prefix="/loan-officers", tags=["Loan Officers"])
 
@@ -156,13 +161,14 @@ def create_loan_officer(
 # ===========================
 
 
-@router.get("/", response_model=List[LoanOfficerOut])
+@router.get("/", response_model=List[LoanOfficerWithEmployeeOut])
 def list_loan_officers(
     db: Session = Depends(get_db),
     user: dict = Depends(get_current_user),
 ):
     """
-    List Loan Officers within the scope of the current user.
+    List Loan Officers within the scope of the current user,
+    including nested Employee + User details.
 
     - admin / super_admin → all
     - regional_manager    → LOs in their region
@@ -172,8 +178,12 @@ def list_loan_officers(
 
     role = (user.get("role") or "").lower()
 
-    q = db.query(LoanOfficer).join(
-        Employee, LoanOfficer.employee_id == Employee.employee_id
+    q = (
+        db.query(LoanOfficer)
+        .join(Employee, LoanOfficer.employee_id == Employee.employee_id)
+        .options(
+            joinedload(LoanOfficer.employee).joinedload(Employee.user)
+        )
     )
 
     if role == "regional_manager":
@@ -195,15 +205,22 @@ def list_loan_officers(
 # ===========================
 
 
-@router.get("/{lo_id}", response_model=LoanOfficerOut)
+@router.get("/{lo_id}", response_model=LoanOfficerWithEmployeeOut)
 def get_loan_officer(
     lo_id: int,
     db: Session = Depends(get_db),
     user: dict = Depends(get_current_user),
 ):
+    """
+    Get a single Loan Officer, including Employee + User details.
+    """
+
     lo = (
         db.query(LoanOfficer)
         .join(Employee, LoanOfficer.employee_id == Employee.employee_id)
+        .options(
+            joinedload(LoanOfficer.employee).joinedload(Employee.user)
+        )
         .filter(LoanOfficer.lo_id == lo_id)
         .first()
     )
@@ -260,6 +277,11 @@ def delete_loan_officer(
     return
 
 
+# ===========================
+# GROUP COUNT FOR A LOAN OFFICER
+# ===========================
+
+
 @router.get("/{lo_id}/groups/count")
 def get_loan_officer_group_count(
     lo_id: int,
@@ -288,6 +310,11 @@ def get_loan_officer_group_count(
     )
 
     return {"lo_id": lo_id, "group_count": group_count}
+
+
+# ===========================
+# LOAN OFFICER + GROUP SUMMARY
+# ===========================
 
 
 @router.get("/groups/summary", response_model=List[LoanOfficerGroupSummaryOut])
@@ -335,7 +362,12 @@ def loan_officer_group_summary(
 
     # admin/super_admin → no extra filter
 
-    loan_officers = q.all()
+    loan_officers = (
+        q.options(
+            joinedload(LoanOfficer.employee).joinedload(Employee.user)
+        )
+        .all()
+    )
 
     if lo_id is not None and len(loan_officers) == 0:
         raise HTTPException(404, "Loan Officer not found or access denied")

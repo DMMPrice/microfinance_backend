@@ -1,7 +1,7 @@
 # app/routes/auth_router.py
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from datetime import datetime, timedelta
 import jwt
 
@@ -328,3 +328,37 @@ def delete_user(user_id: int, db: Session = Depends(get_db)):
     db.commit()
 
     return {"message": "User deleted successfully"}
+
+@router.get("/users")
+def list_users(db: Session = Depends(get_db)):
+    # include employee + role for UI
+    users = (
+        db.query(User)
+        .options(
+            joinedload(User.employee).joinedload(Employee.role)
+        )
+        .all()
+    )
+
+    # shape it nicely for frontend
+    out = []
+    for u in users:
+        e = u.employee
+        out.append({
+            "user_id": u.user_id,
+            "username": u.username,
+            "email": u.email,
+            "is_active": u.is_active,
+            "employee": None if not e else {
+                "employee_id": e.employee_id,
+                "full_name": e.full_name,
+                "phone": e.phone,
+                "role_id": e.role_id,
+                "region_id": e.region_id,
+                "branch_id": e.branch_id,
+                "employee_code": e.employee_code,
+                "is_active": e.is_active,
+                "role_name": (e.role.name if e.role else None),
+            }
+        })
+    return out
