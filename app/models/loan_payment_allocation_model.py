@@ -11,4 +11,3 @@ class LoanPaymentAllocation(Base):
 
     principal_alloc = Column(Numeric(12, 2), nullable=False, default=0)
     interest_alloc = Column(Numeric(12, 2), nullable=False, default=0)
-l̥

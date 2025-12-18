@@ -85,4 +85,3 @@ class LedgerRowOut(BaseModel):
 
     class Config:
         from_attributes = True
-l̥

@@ -25,4 +25,3 @@ class LoanPayment(Base):
     remarks = Column(Text, nullable=True)
 
     created_on = Column(DateTime, server_default=func.now())
-l̥

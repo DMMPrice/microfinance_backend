@@ -51,4 +51,3 @@ class Loan(Base):
         cascade="all, delete-orphan",
         lazy="selectin"
     )
-l̥

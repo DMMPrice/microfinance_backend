@@ -28,4 +28,3 @@ class LoanLedger(Base):
 
     created_by = Column(Integer, ForeignKey("users.user_id"), nullable=True)
     created_on = Column(DateTime, server_default=func.now())
-l̥

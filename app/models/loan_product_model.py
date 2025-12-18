@@ -14,4 +14,3 @@ class LoanProduct(Base):
 
     is_active = Column(Boolean, default=True)
     created_on = Column(DateTime, server_default=func.now())
-l̥

@@ -29,4 +29,3 @@ class LoanInstallment(Base):
     paid_date = Column(Date, nullable=True)
 
     loan = relationship("Loan", back_populates="installments")
-l̥
