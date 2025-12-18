@@ -9,6 +9,8 @@ from app.routers import (
     branches_router,
     regions_router,
     loan_officers_router,
+    loans_router,
+    settings_router
 )
 from app.initial_data import init_seed  # 👉 USE THIS instead of seed_roles()
 
@@ -45,7 +47,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:8080",
+        "http://localhost:8081",
         "http://127.0.0.1:8080",
+        "http://127.0.0.1:8081",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -61,6 +65,8 @@ app.include_router(branches_router.router)
 app.include_router(groups_router.router)
 app.include_router(members_router.router)
 app.include_router(loan_officers_router.router)
+app.include_router(loans_router.router)
+app.include_router(settings_router.router)
 
 
 @app.get("/")
