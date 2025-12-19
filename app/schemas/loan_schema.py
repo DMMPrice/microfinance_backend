@@ -85,3 +85,69 @@ class LedgerRowOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+class LoanSummaryOut(BaseModel):
+    loan_id: int
+    loan_account_no: Optional[str] = None
+
+    member_id: int
+    member_name: str
+    group_id: int
+    group_name: str
+    lo_id: int
+
+    principal_amount: float
+    interest_amount_total: float
+    total_disbursed_amount: float
+
+    total_paid: float
+    outstanding: float
+    advance_balance: float
+    status: str
+
+    next_due_date: Optional[date] = None
+    next_due_amount: Optional[float] = None
+
+
+class LoanListOut(BaseModel):
+    loan_id: int
+    loan_account_no: Optional[str] = None
+    member_id: int
+    group_id: int
+    lo_id: int
+    principal_amount: float
+    total_disbursed_amount: float
+    installment_amount: float
+    duration_weeks: int
+    status: str
+    disburse_date: date
+    first_installment_date: date
+
+    class Config:
+        from_attributes = True
+
+
+class CollectionRowOut(BaseModel):
+    loan_id: int
+    member_id: int
+    member_name: str
+    group_id: int
+    group_name: str
+    due_date: date
+    installment_no: int
+    due_left: float
+    advance_balance: float
+    status: str
+
+
+class AdvanceApplyResult(BaseModel):
+    applied_installments: int
+    used_advance: float
+    remaining_advance: float
+
+
+class LoanStatsOut(BaseModel):
+    DISBURSED: int = 0
+    ACTIVE: int = 0
+    CLOSED: int = 0
+    OTHER: int = 0

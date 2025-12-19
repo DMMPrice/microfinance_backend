@@ -11,7 +11,8 @@ from app.routers import (
     regions_router,
     loan_officers_router,
     loans_router,
-    settings_router
+    settings_router,
+    reports_router
 )
 from app.initial_data import init_seed  # 👉 USE THIS instead of seed_roles()
 
@@ -68,6 +69,7 @@ app.include_router(members_router.router)
 app.include_router(loan_officers_router.router)
 app.include_router(loans_router.router)
 app.include_router(settings_router.router)
+app.include_router(reports_router.router)
 
 
 @app.get("/")
