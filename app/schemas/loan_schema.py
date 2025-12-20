@@ -151,3 +151,35 @@ class LoanStatsOut(BaseModel):
     ACTIVE: int = 0
     CLOSED: int = 0
     OTHER: int = 0
+
+class LoanMasterRowOut(BaseModel):
+    loan_id: int
+    loan_account_no: str
+
+    member_id: int
+    member_name: str
+
+    group_id: int
+    group_name: str
+
+    lo_id: int | None = None
+    branch_id: int | None = None
+    region_id: int | None = None
+
+    product_id: int | None = None
+    disburse_date: date | None = None
+    first_installment_date: date | None = None
+
+    duration_weeks: int
+    installment_type: str
+    installment_amount: float
+
+    principal_amount: float
+    interest_amount_total: float
+    total_disbursed_amount: float
+
+    total_paid: float
+    outstanding: float
+    advance_balance: float
+
+    status: str
