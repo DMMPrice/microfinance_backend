@@ -1,6 +1,6 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from datetime import date, datetime
-from typing import Optional, List
+from typing import Optional, List, Literal
 
 
 class LoanCreate(BaseModel):
@@ -60,9 +60,16 @@ class InstallmentOut(BaseModel):
 class PaymentCreate(BaseModel):
     payment_date: Optional[datetime] = None
     amount_received: float = Field(gt=0)
-    payment_mode: str = "CASH"
+    payment_mode: Literal["CASH", "UPI", "BANK", "CARD", "OTHER"] = "CASH"
     receipt_no: Optional[str] = None
     remarks: Optional[str] = None
+
+    @field_validator("receipt_no", "remarks", mode="before")
+    def empty_to_none(cls, v):
+        if v is None:
+            return None
+        v = str(v).strip()
+        return v or None
 
 
 class PaymentResult(BaseModel):
@@ -85,6 +92,7 @@ class LedgerRowOut(BaseModel):
 
     class Config:
         from_attributes = True
+
 
 class LoanSummaryOut(BaseModel):
     loan_id: int
@@ -151,6 +159,7 @@ class LoanStatsOut(BaseModel):
     ACTIVE: int = 0
     CLOSED: int = 0
     OTHER: int = 0
+
 
 class LoanMasterRowOut(BaseModel):
     loan_id: int
