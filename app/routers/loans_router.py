@@ -654,17 +654,15 @@ def create_payment(loan_id: int, payload: PaymentCreate, db: Session = Depends(g
             loan_id=loan_id,
             txn_type="PAYMENT",
             debit=money(0),
-            credit=applied_total,  # ✅ applied portion only
-            principal_component=total_principal,  # ✅ now accurate
-            interest_component=total_interest,  # ✅ now accurate
+            credit=applied_total,
+            principal_component=total_principal,
+            interest_component=total_interest,
             balance_outstanding=new_bal,
             narration=f"Payment received (Receipt: {payload.receipt_no})"
-            if payload.receipt_no
-            else "Payment received",
+            if payload.receipt_no else "Payment received",
         )
     )
 
-    # Optional: record advance addition separately
     if remaining > 0:
         db.add(
             LoanLedger(
@@ -679,8 +677,11 @@ def create_payment(loan_id: int, payload: PaymentCreate, db: Session = Depends(g
             )
         )
 
+    # ✅ Status updates (after ledger)
     if new_bal <= 0:
         loan.status = "CLOSED"
+    elif loan.status == "DISBURSED" and applied_total > 0:
+        loan.status = "ACTIVE"
 
     db.commit()
 
