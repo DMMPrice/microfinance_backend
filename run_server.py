@@ -4,7 +4,9 @@ import uvicorn
 # ⬇️ IMPORTANT: this makes Nuitka see and bundle main.py
 from main import app
 
-
+# python -m nuitka --onefile --standalone --follow-imports
+# --include-data-file=.env=.env --enable-plugin=multiprocessing
+# --enable-plugin=anti-bloat --output-dir=dist run_server.py
 def main():
     # Pass the app object directly (no "main:app" string)
     uvicorn.run(

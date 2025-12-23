@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from datetime import timedelta, date, datetime
@@ -162,32 +162,39 @@ def loan_stats(db: Session = Depends(get_db)):
 
 
 @router.get("/installments/due")
-def installments_due(as_on: date, db: Session = Depends(get_db)):
-    rows = db.execute(
-        text(
-            """
-            select i.installment_id,
-                   i.loan_id,
-                   i.installment_no,
-                   i.due_date,
-                   (i.total_due - i.total_paid) as due_left,
-                   l.member_id,
-                   m.full_name                  as member_name,
-                   l.group_id,
-                   g.group_name,
-                   l.lo_id
-            from loan_installments i
-                     join loans l on l.loan_id = i.loan_id
-                     join members m on m.member_id = l.member_id
-                     join groups g on g.group_id = l.group_id
-            where i.status <> 'PAID'
-              and i.due_date <= :as_on
-              and l.status in ('DISBURSED', 'ACTIVE')
-            order by i.due_date asc
-            """
-        ),
-        {"as_on": as_on},
-    ).mappings().all()
+def installments_due(
+        as_on: Optional[date] = Query(None),
+        db: Session = Depends(get_db),
+):
+    sql = """
+          select i.installment_id,
+                 i.loan_id,
+                 i.installment_no,
+                 i.due_date,
+                 (i.total_due - i.total_paid) as due_left,
+                 l.member_id,
+                 m.full_name                  as member_name,
+                 l.group_id,
+                 g.group_name,
+                 l.lo_id
+          from loan_installments i
+                   join loans l on l.loan_id = i.loan_id
+                   join members m on m.member_id = l.member_id
+                   join groups g on g.group_id = l.group_id
+          where i.status <> 'PAID'
+            and l.status in ('DISBURSED', 'ACTIVE') \
+          """
+
+    params = {}
+
+    # ✅ apply date filter only if as_on is provided
+    if as_on:
+        sql += " and i.due_date <= :as_on"
+        params["as_on"] = as_on
+
+    sql += " order by i.due_date asc"
+
+    rows = db.execute(text(sql), params).mappings().all()
 
     return [
         {
@@ -226,34 +233,46 @@ def loans_by_group(
     return q.order_by(Loan.loan_id.desc()).all()
 
 
-@router.get("/collections/by-lo/{lo_id}", response_model=list[CollectionRowOut])
-def collections_by_lo(lo_id: int, as_on: date, db: Session = Depends(get_db)):
-    rows = db.execute(
-        text(
-            """
-            select l.loan_id,
-                   m.member_id,
-                   m.full_name                  as member_name,
-                   g.group_id,
-                   g.group_name,
-                   i.due_date,
-                   i.installment_no,
-                   (i.total_due - i.total_paid) as due_left,
-                   l.advance_balance,
-                   i.status
-            from loans l
-                     join members m on m.member_id = l.member_id
-                     join groups g on g.group_id = l.group_id
-                     join loan_installments i on i.loan_id = l.loan_id
-            where l.lo_id = :loid
-              and l.status in ('DISBURSED', 'ACTIVE')
-              and i.status <> 'PAID'
-              and i.due_date <= :as_on
-            order by g.group_id, i.due_date, m.full_name
-            """
-        ),
-        {"loid": lo_id, "as_on": as_on},
-    ).mappings().all()
+@router.get("/collections/by-lo", response_model=list[CollectionRowOut])
+def collections_by_lo(
+        lo_id: Optional[int] = Query(None),
+        as_on: Optional[date] = Query(None),
+        db: Session = Depends(get_db),
+):
+    sql = """
+          select l.loan_id,
+                 m.member_id,
+                 m.full_name                  as member_name,
+                 g.group_id,
+                 g.group_name,
+                 i.due_date,
+                 i.installment_no,
+                 (i.total_due - i.total_paid) as due_left,
+                 l.advance_balance,
+                 i.status
+          from loans l
+                   join members m on m.member_id = l.member_id
+                   join groups g on g.group_id = l.group_id
+                   join loan_installments i on i.loan_id = l.loan_id
+          where l.status in ('DISBURSED', 'ACTIVE')
+            and i.status <> 'PAID' \
+          """
+
+    params = {}
+
+    # ✅ optional LO filter
+    if lo_id is not None:
+        sql += " and l.lo_id = :loid"
+        params["loid"] = lo_id
+
+    # ✅ optional date filter
+    if as_on:
+        sql += " and i.due_date <= :as_on"
+        params["as_on"] = as_on
+
+    sql += " order by g.group_id, i.due_date, m.full_name"
+
+    rows = db.execute(text(sql), params).mappings().all()
 
     return [
         CollectionRowOut(

@@ -30,11 +30,11 @@ load_dotenv(dotenv_path=env_path)
 # ---------------------
 # Read environment vars
 # ---------------------
-DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_HOST = os.getenv("DB_HOST", "72.61.174.109")
 DB_PORT = os.getenv("DB_PORT", "5432")
 DB_NAME = os.getenv("DB_NAME", "microfinance")
 DB_USER = os.getenv("DB_USER", "admin")
-DB_PASS = os.getenv("DB_PASS", "admin")
+DB_PASS = os.getenv("DB_PASS", "Powercasting2025")
 
 # 🛡️ Fix the None / empty / "None" port issue permanently
 if not DB_PORT or str(DB_PORT).lower() == "none":
