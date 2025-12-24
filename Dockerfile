@@ -6,7 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# System deps for cryptography, mysql, etc.
+# System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libssl-dev \
@@ -22,7 +22,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Expose FastAPI port (inside container)
-EXPOSE 4000
+EXPOSE 5050
 
-# Run the FastAPI app with multiple workers
-CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "4000", "--workers", "4"]
+# Run FastAPI (PROD mode → no --reload)
+CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5050", "--workers", "4"]

@@ -2,10 +2,12 @@ pipeline {
     agent any
 
     environment {
-        REGISTRY        = "dmmprice/guvnl_backend"
-        CONTAINER_NAME  = "guvnl-backend"
-        HOST_PORT       = "4001"     // <— updated
-        CONTAINER_PORT  = "4000"
+        REGISTRY        = "dmmprice/microfinance_backend"
+        CONTAINER_NAME  = "microfinance_backend"
+        HOST_PORT       = "5050"
+        CONTAINER_PORT  = "5050"
+        GIT_URL         = "https://github.com/AppynittyCommunication/pmsproject_backend.git"
+        GIT_BRANCH      = "main"
     }
 
     triggers {
@@ -13,15 +15,17 @@ pipeline {
     }
 
     stages {
-        stage('Checkout') {
-            steps {
-                git branch: 'main', url: 'https://github.com/DMMPrice/dashboard_backend.git'
-            }
-        }
+        stage('Checkout (Private Repo)') {
+  steps {
+    git branch: 'main',
+        credentialsId: 'github-dmmprice-pat',
+        url: 'https://github.com/AppynittyCommunication/pmsproject_backend.git'
+  }
+}
 
         stage('Prepare .env (from Jenkins secret file)') {
             steps {
-                withCredentials([file(credentialsId: 'guvnl-backend-env-file', variable: 'ENV_FILE')]) {
+                withCredentials([file(credentialsId: 'microfinance-backend-env-file', variable: 'ENV_FILE')]) {
                     sh '''
                       echo "Copying env file from Jenkins credential..."
                       cp "$ENV_FILE" .env
@@ -32,15 +36,12 @@ pipeline {
 
         stage('Build Docker image') {
             steps {
-                script {
-                    def imageTag = "${env.BUILD_NUMBER}"
-                    sh """
-                      docker build \
-                        -t ${REGISTRY}:${imageTag} \
-                        -t ${REGISTRY}:latest \
-                        .
-                    """
-                }
+                sh '''
+                  docker build \
+                    -t ${REGISTRY}:${BUILD_NUMBER} \
+                    -t ${REGISTRY}:latest \
+                    .
+                '''
             }
         }
 
@@ -65,24 +66,17 @@ pipeline {
             steps {
                 withCredentials([file(credentialsId: 'guvnl-backend-env-file', variable: 'ENV_FILE')]) {
                     sh '''
-                      echo "Pulling latest image..."
                       docker pull ${REGISTRY}:latest
 
-                      echo "Stopping old container if exists..."
                       docker stop ${CONTAINER_NAME} || true
-
-                      echo "Removing old container if exists..."
                       docker rm ${CONTAINER_NAME} || true
 
-                      echo "Starting new container on port ${HOST_PORT}..."
                       docker run -d \
                         --name ${CONTAINER_NAME} \
                         --restart always \
                         -p ${HOST_PORT}:${CONTAINER_PORT} \
                         --env-file "$ENV_FILE" \
                         ${REGISTRY}:latest
-
-                      echo "Deployment complete."
                     '''
                 }
             }
