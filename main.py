@@ -74,4 +74,4 @@ app.include_router(reports_router.router)
 
 @app.get("/")
 def root():
-    return {"message": "Microfinance Backend is running"}
+    return {"message": "Microfinance Backend is running!!"}
