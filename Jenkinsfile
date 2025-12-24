@@ -16,12 +16,12 @@ pipeline {
 
     stages {
         stage('Checkout (Private Repo)') {
-  steps {
-    git branch: 'main',
-        credentialsId: 'github-dmmprice-pat',
-        url: 'https://github.com/AppynittyCommunication/pmsproject_backend.git'
-  }
-}
+            steps {
+                git branch: "${GIT_BRANCH}",
+                    credentialsId: 'github-dmmprice-pat',
+                    url: "${GIT_URL}"
+            }
+        }
 
         stage('Prepare .env (from Jenkins secret file)') {
             steps {
@@ -64,7 +64,7 @@ pipeline {
 
         stage('Deploy (pull & restart container)') {
             steps {
-                withCredentials([file(credentialsId: 'guvnl-backend-env-file', variable: 'ENV_FILE')]) {
+                withCredentials([file(credentialsId: 'microfinance-backend-env-file', variable: 'ENV_FILE')]) {
                     sh '''
                       docker pull ${REGISTRY}:latest
 
