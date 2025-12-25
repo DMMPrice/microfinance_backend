@@ -8,6 +8,9 @@ pipeline {
         CONTAINER_PORT  = "5050"
         GIT_URL         = "https://github.com/DMMPrice/microfinance_backend.git"
         GIT_BRANCH      = "main"
+
+        // ✅ host-visible path (must exist on host AND mounted into Jenkins container)
+        HOST_ENV_FILE   = "/data/jenkins/envs/microfinance_backend.env"
     }
 
     triggers {
@@ -22,12 +25,14 @@ pipeline {
             }
         }
 
-        stage('Prepare .env (from Jenkins secret file)') {
+        stage('Prepare env file (from Jenkins secret file)') {
             steps {
                 withCredentials([file(credentialsId: 'microfinance-backend-env-file', variable: 'ENV_FILE')]) {
                     sh '''
-                      echo "Copying env file from Jenkins credential..."
-                      cp "$ENV_FILE" .env
+                      echo "Saving env file to host-visible path..."
+                      mkdir -p /data/jenkins/envs
+                      install -m 600 "$ENV_FILE" /data/jenkins/envs/microfinance_backend.env
+                      ls -l /data/jenkins/envs || true
                     '''
                 }
             }
@@ -63,21 +68,19 @@ pipeline {
 
         stage('Deploy (pull & restart container)') {
             steps {
-                withCredentials([file(credentialsId: 'microfinance-backend-env-file', variable: 'ENV_FILE')]) {
-                    sh '''
-                      docker pull ${REGISTRY}:latest
+                sh '''
+                  docker pull ${REGISTRY}:latest
 
-                      docker stop ${CONTAINER_NAME} || true
-                      docker rm ${CONTAINER_NAME} || true
+                  docker stop ${CONTAINER_NAME} || true
+                  docker rm ${CONTAINER_NAME} || true
 
-                      docker run -d \
-                        --name ${CONTAINER_NAME} \
-                        --restart always \
-                        -p ${HOST_PORT}:${CONTAINER_PORT} \
-                        --env-file "$ENV_FILE" \
-                        ${REGISTRY}:latest
-                    '''
-                }
+                  docker run -d \
+                    --name ${CONTAINER_NAME} \
+                    --restart always \
+                    -p ${HOST_PORT}:${CONTAINER_PORT} \
+                    --env-file ${HOST_ENV_FILE} \
+                    ${REGISTRY}:latest
+                '''
             }
         }
     }
