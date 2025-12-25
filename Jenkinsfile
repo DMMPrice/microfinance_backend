@@ -26,17 +26,18 @@ pipeline {
         }
 
         stage('Prepare env file (from Jenkins secret file)') {
-            steps {
-                withCredentials([file(credentialsId: 'microfinance-backend-env-file', variable: 'ENV_FILE')]) {
-                    sh '''
-                      echo "Saving env file to host-visible path..."
-                      mkdir -p /data/jenkins/envs
-                      install -m 600 "$ENV_FILE" /data/jenkins/envs/microfinance_backend.env
-                      ls -l /data/jenkins/envs || true
-                    '''
-                }
-            }
+    steps {
+        withCredentials([file(credentialsId: 'microfinance-backend-env-file', variable: 'ENV_FILE')]) {
+            sh '''
+              echo "Saving env file to host-visible path..."
+              mkdir -p /data/jenkins/envs
+              install -m 600 "$ENV_FILE" /data/jenkins/envs/.env
+              ls -la /data/jenkins/envs || true
+            '''
         }
+    }
+}
+
 
         stage('Build Docker image') {
             steps {
