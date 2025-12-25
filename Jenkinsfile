@@ -6,7 +6,7 @@ pipeline {
         CONTAINER_NAME  = "microfinance_backend"
         HOST_PORT       = "5050"
         CONTAINER_PORT  = "5050"
-        GIT_URL         = "https://github.com/AppynittyCommunication/pmsproject_backend.git"
+        GIT_URL         = "https://github.com/DMMPrice/microfinance_backend.git"
         GIT_BRANCH      = "main"
     }
 
@@ -18,7 +18,6 @@ pipeline {
         stage('Checkout (Private Repo)') {
             steps {
                 git branch: "${GIT_BRANCH}",
-                    credentialsId: 'github-dmmprice-pat',
                     url: "${GIT_URL}"
             }
         }
