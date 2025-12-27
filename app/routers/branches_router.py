@@ -1,6 +1,6 @@
 # app/routes/branches_router.py
-
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.utils.database import get_db
@@ -37,13 +37,18 @@ def create_branch(payload: BranchCreate, db: Session = Depends(get_db)):
 # READ ALL
 @router.get("/", response_model=list[BranchOut])
 def list_branches(
-        region_id: int | None = None,
+        region_id: Optional[int] = Query(
+            default=None,
+            description="Filter branches by region ID"
+        ),
         db: Session = Depends(get_db),
 ):
-    q = db.query(Branch)
+    query = db.query(Branch)
+
     if region_id is not None:
-        q = q.filter(Branch.region_id == region_id)
-    return q.all()
+        query = query.filter(Branch.region_id == region_id)
+
+    return query.all()
 
 
 # READ ONE

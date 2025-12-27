@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+from typing import Optional
 
 from app.utils.database import get_db
 from app.models.group_model import Group
@@ -69,19 +70,44 @@ def create_member(
 # --------------------------------------
 @router.get("/", response_model=list[MemberOut])
 def list_members(
+    group_id: Optional[int] = Query(None),
+    lo_id: Optional[int] = Query(None),
+    branch_id: Optional[int] = Query(None),
+    region_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
     user: dict = Depends(get_current_user),
 ):
     q = db.query(Member).filter(Member.is_active == True)
 
-    if user["role"] == "regional_manager":
+    role = user["role"]
+
+    # ---------------------------
+    # ROLE-BASED HARD FILTERS
+    # ---------------------------
+    if role == "regional_manager":
         q = q.filter(Member.region_id == user["region_id"])
 
-    if user["role"] == "branch_manager":
+    elif role == "branch_manager":
         q = q.filter(Member.branch_id == user["branch_id"])
 
-    if user["role"] == "loan_officer":
+    elif role == "loan_officer":
         q = q.filter(Member.lo_id == user["user_id"])
+
+    # ---------------------------
+    # OPTIONAL QUERY FILTERS
+    # (safe because role filters applied first)
+    # ---------------------------
+    if region_id is not None:
+        q = q.filter(Member.region_id == region_id)
+
+    if branch_id is not None:
+        q = q.filter(Member.branch_id == branch_id)
+
+    if lo_id is not None:
+        q = q.filter(Member.lo_id == lo_id)
+
+    if group_id is not None:
+        q = q.filter(Member.group_id == group_id)
 
     return q.all()
 

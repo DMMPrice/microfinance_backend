@@ -1,8 +1,6 @@
 # app/routers/groups_router.py
-
-from typing import List
-
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import List, Optional
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -42,9 +40,9 @@ def _ensure_can_access_group(user: dict, group: Group):
 # --------------------------------------
 @router.post("/", response_model=GroupOut)
 def create_group(
-    payload: GroupCreate,
-    db: Session = Depends(get_db),
-    user: dict = Depends(get_current_user),
+        payload: GroupCreate,
+        db: Session = Depends(get_db),
+        user: dict = Depends(get_current_user),
 ):
     # Admin → allowed
     # RM → region match only
@@ -94,20 +92,41 @@ def create_group(
 # --------------------------------------
 @router.get("/", response_model=list[GroupOut])
 def list_groups(
-    db: Session = Depends(get_db),
-    user: dict = Depends(get_current_user),
+        region_id: Optional[int] = Query(None),
+        branch_id: Optional[int] = Query(None),
+        lo_id: Optional[int] = Query(None),
+        db: Session = Depends(get_db),
+        user: dict = Depends(get_current_user),
 ):
     q = db.query(Group)
     role = user["role"]
 
+    # ---------------------------
+    # ROLE-BASED HARD FILTERS
+    # ---------------------------
+
     if role == "regional_manager":
         q = q.filter(Group.region_id == user["region_id"])
 
-    if role == "branch_manager":
+    elif role == "branch_manager":
         q = q.filter(Group.branch_id == user["branch_id"])
 
-    if role == "loan_officer":
+    elif role == "loan_officer":
         q = q.filter(Group.lo_id == user["user_id"])
+
+    # ---------------------------
+    # OPTIONAL QUERY FILTERS
+    # (Admin / higher roles only)
+    # ---------------------------
+
+    if region_id is not None:
+        q = q.filter(Group.region_id == region_id)
+
+    if branch_id is not None:
+        q = q.filter(Group.branch_id == branch_id)
+
+    if lo_id is not None:
+        q = q.filter(Group.lo_id == lo_id)
 
     return q.all()
 
@@ -117,9 +136,9 @@ def list_groups(
 # --------------------------------------
 @router.get("/{group_id}", response_model=GroupOut)
 def get_group(
-    group_id: int,
-    db: Session = Depends(get_db),
-    user: dict = Depends(get_current_user),
+        group_id: int,
+        db: Session = Depends(get_db),
+        user: dict = Depends(get_current_user),
 ):
     group = db.query(Group).filter(Group.group_id == group_id).first()
 
@@ -136,9 +155,9 @@ def get_group(
 # --------------------------------------
 @router.delete("/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_group(
-    group_id: int,
-    db: Session = Depends(get_db),
-    user: dict = Depends(get_current_user),
+        group_id: int,
+        db: Session = Depends(get_db),
+        user: dict = Depends(get_current_user),
 ):
     """
     Delete a group with the same access rules used for reading:
@@ -172,9 +191,9 @@ class AssignLoanOfficerPayload(BaseModel):
 
 @router.post("/assign-lo", response_model=list[GroupOut])
 def assign_loan_officer_to_groups(
-    payload: AssignLoanOfficerPayload,
-    db: Session = Depends(get_db),
-    user: dict = Depends(get_current_user),
+        payload: AssignLoanOfficerPayload,
+        db: Session = Depends(get_db),
+        user: dict = Depends(get_current_user),
 ):
     """
     Assign a Loan Officer to one or multiple groups.
@@ -258,9 +277,9 @@ def assign_loan_officer_to_groups(
 # --------------------------------------
 @router.get("/{group_id}/summary", response_model=GroupSummaryOut)
 def get_group_summary(
-    group_id: int,
-    db: Session = Depends(get_db),
-    user: dict = Depends(get_current_user),
+        group_id: int,
+        db: Session = Depends(get_db),
+        user: dict = Depends(get_current_user),
 ):
     # 1️⃣ Fetch group
     group = db.query(Group).filter(Group.group_id == group_id).first()
