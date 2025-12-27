@@ -24,7 +24,7 @@ try:
     # IMPORTANT: import app after logging is ready
     from main import app
 
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=False, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=5001, reload=False, log_level="info")
 
 except Exception:
     err = traceback.format_exc()
