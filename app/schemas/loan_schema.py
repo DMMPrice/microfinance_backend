@@ -1,6 +1,7 @@
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, constr
 from datetime import date, datetime
 from typing import Optional, List, Literal
+from decimal import Decimal
 
 
 class LoanCreate(BaseModel):
@@ -192,3 +193,18 @@ class LoanMasterRowOut(BaseModel):
     advance_balance: float
 
     status: str
+
+class LoanUpdate(BaseModel):
+    # editable identifiers
+    loan_account_no: Optional[constr(strip_whitespace=True, min_length=3, max_length=50)] = None
+
+    # core loan terms (allow only when NO payments exist)
+    product_id: Optional[int] = None
+    disburse_date: Optional[date] = None
+    first_installment_date: Optional[date] = None
+    duration_weeks: Optional[int] = None
+    principal_amount: Optional[Decimal] = None
+    flat_interest_total: Optional[Decimal] = None  # (maps to interest_amount_total)
+
+    # optional admin edits (if you want)
+    status: Optional[str] = None  # e.g. DISBURSED/ACTIVE/CLOSED/CANCELLED

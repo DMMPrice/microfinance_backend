@@ -13,3 +13,5 @@ from app.models.member_model import Member
 from app.models.regions_model import Region
 from app.models.roles_model import Role
 from app.models.user_model import User
+from app.models.expense_categories_model import ExpenseCategory
+from app.models.expense_subcategories_model import ExpenseSubCategory

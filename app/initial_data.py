@@ -10,12 +10,12 @@ from app.models.branches_model import Branch
 from app.models.user_model import User
 from app.models.employee_model import Employee
 from app.models.loan_officer_model import LoanOfficer
+from app.models.expense_categories_model import ExpenseCategory
+from app.models.expense_subcategories_model import ExpenseSubCategory
 
 # -----------------------------------------
 # 1) Default roles (by NAME, not by ID)
 # -----------------------------------------
-# NOTE: We always refer to roles by name in code,
-# so even if IDs change, logic still works.
 DEFAULT_ROLES = [
     "admin",
     "regional_manager",
@@ -41,8 +41,6 @@ DEFAULT_BRANCHES = [
 # -----------------------------------------
 # 3) Default Users + Employees (seed data)
 # -----------------------------------------
-# Passwords are intentionally in plain text,
-# as per your instruction.
 USERS_TO_SEED = [
     {
         "username": "superadmin",
@@ -113,6 +111,32 @@ USERS_TO_SEED = [
         "date_joined": date(2025, 1, 10),
         "notes": "Field loan officer",
         "is_active": True,
+    },
+]
+
+# -----------------------------------------
+# 4) Default Expense Category + Subcategory
+# -----------------------------------------
+DEFAULT_EXPENSE_MASTER = [
+    {
+        "category": "Office & Admin",
+        "subcategories": ["Stationery", "Printing", "Internet", "Mobile Recharge", "Courier"],
+    },
+    {
+        "category": "Rent & Utilities",
+        "subcategories": ["Office Rent", "Electricity", "Water", "Maintenance"],
+    },
+    {
+        "category": "Staff & Welfare",
+        "subcategories": ["Tea/Snacks", "Welfare", "Training", "Uniform"],
+    },
+    {
+        "category": "Travel & Transport",
+        "subcategories": ["Local Travel", "Fuel", "Vehicle Maintenance", "Auto/Taxi"],
+    },
+    {
+        "category": "Banking & Charges",
+        "subcategories": ["Bank Charges", "Loan Processing Fees", "SMS Charges"],
     },
 ]
 
@@ -197,7 +221,6 @@ def seed_users_and_employees(db: Session) -> None:
     for u in USERS_TO_SEED:
         username = u["username"]
 
-        # If user already exists, skip this entry
         existing_user = db.query(User).filter(User.username == username).first()
         if existing_user:
             print(f"[INIT] User '{username}' already exists, skipping.")
@@ -209,7 +232,6 @@ def seed_users_and_employees(db: Session) -> None:
             print(f"[INIT] Role '{role_name}' not found for user '{username}', skipping.")
             continue
 
-        # Resolve region / branch IDs (if any)
         region_id = None
         branch_id = None
 
@@ -227,7 +249,6 @@ def seed_users_and_employees(db: Session) -> None:
                 continue
             branch_id = br_obj.branch_id
 
-        # 1) Create auth user (plain text password as requested)
         auth_user = User(
             username=u["username"],
             email=u["email"],
@@ -235,9 +256,8 @@ def seed_users_and_employees(db: Session) -> None:
             is_active=u["is_active"],
         )
         db.add(auth_user)
-        db.flush()  # populate auth_user.user_id
+        db.flush()
 
-        # 2) Create employee profile
         employee = Employee(
             user_id=auth_user.user_id,
             full_name=u["full_name"],
@@ -251,9 +271,8 @@ def seed_users_and_employees(db: Session) -> None:
             is_active=u["is_active"],
         )
         db.add(employee)
-        db.flush()  # populate employee.employee_id
+        db.flush()
 
-        # 3) If loan_officer, create entry in loan_officers
         if role_name == "loan_officer":
             lo_exists = (
                 db.query(LoanOfficer)
@@ -273,6 +292,58 @@ def seed_users_and_employees(db: Session) -> None:
         print("[INIT] Users & employees already present, skipping.")
 
 
+# ✅ NEW: Seed expense categories + subcategories
+def seed_expense_categories_and_subcategories(db: Session) -> None:
+    created_any = False
+
+    # Preload existing categories
+    existing_cats = {c.category_name: c for c in db.query(ExpenseCategory).all()}
+
+    for row in DEFAULT_EXPENSE_MASTER:
+        cat_name = row["category"].strip()
+
+        # 1) Category
+        cat_obj = existing_cats.get(cat_name)
+        if not cat_obj:
+            cat_obj = ExpenseCategory(category_name=cat_name, is_active=True)
+            db.add(cat_obj)
+            db.flush()  # get category_id
+            existing_cats[cat_name] = cat_obj
+            created_any = True
+            print(f"[INIT] Created expense category: {cat_name}")
+
+        # 2) Subcategories for this category
+        existing_subs = {
+            s.subcategory_name
+            for s in (
+                db.query(ExpenseSubCategory)
+                .filter(ExpenseSubCategory.category_id == cat_obj.category_id)
+                .all()
+            )
+        }
+
+        for sub_name in row.get("subcategories", []):
+            sub_name = sub_name.strip()
+            if sub_name in existing_subs:
+                continue
+
+            db.add(
+                ExpenseSubCategory(
+                    category_id=cat_obj.category_id,
+                    subcategory_name=sub_name,
+                    is_active=True,
+                )
+            )
+            created_any = True
+            print(f"[INIT]   - Created expense subcategory: {cat_name} -> {sub_name}")
+
+    if created_any:
+        db.commit()
+        print("[INIT] Expense category/subcategory seeding completed.")
+    else:
+        print("[INIT] Expense categories/subcategories already seeded, skipping.")
+
+
 # =========================================
 # Entry point
 # =========================================
@@ -284,6 +355,10 @@ def init_seed() -> None:
         seed_regions(db)
         seed_branches(db)
         seed_users_and_employees(db)
+
+        # ✅ NEW: Expense master seed
+        seed_expense_categories_and_subcategories(db)
+
     finally:
         db.close()
 

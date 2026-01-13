@@ -31,6 +31,7 @@ from app.schemas.loan_schema import (
     AdvanceApplyResult,
     LoanStatsOut,
     LoanMasterRowOut,
+    LoanUpdate
 )
 
 router = APIRouter(prefix="/loans", tags=["Loans"])
@@ -169,6 +170,7 @@ def installments_due(
     sql = """
           select i.installment_id,
                  i.loan_id,
+                 l.loan_account_no, -- ✅ added
                  i.installment_no,
                  i.due_date,
                  (i.total_due - i.total_paid) as due_left,
@@ -182,7 +184,7 @@ def installments_due(
                    join members m on m.member_id = l.member_id
                    join groups g on g.group_id = l.group_id
           where i.status <> 'PAID'
-            and l.status in ('DISBURSED', 'ACTIVE') \
+            and l.status in ('DISBURSED', 'ACTIVE')
           """
 
     params = {}
@@ -200,6 +202,7 @@ def installments_due(
         {
             "installment_id": r["installment_id"],
             "loan_id": r["loan_id"],
+            "loan_account_no": r["loan_account_no"],  # ✅ added
             "installment_no": r["installment_no"],
             "due_date": r["due_date"],
             "due_left": float(r["due_left"]),
@@ -533,6 +536,170 @@ def create_loan(payload: LoanCreate, db: Session = Depends(get_db)):
     except Exception:
         db.rollback()
         raise
+
+
+@router.put("/{loan_id}", response_model=LoanOut)
+def update_loan(loan_id: int, payload: LoanUpdate, db: Session = Depends(get_db)):
+    loan = db.query(Loan).filter(Loan.loan_id == loan_id).first()
+    if not loan:
+        raise HTTPException(404, "Loan not found")
+
+    # check if any payment exists
+    has_payment = (
+        db.query(LoanPayment.payment_id)
+        .filter(LoanPayment.loan_id == loan_id)
+        .first()
+        is not None
+    )
+
+    # detect "term-changing" fields
+    term_fields = {
+        "product_id",
+        "disburse_date",
+        "first_installment_date",
+        "duration_weeks",
+        "principal_amount",
+        "flat_interest_total",
+    }
+    incoming = payload.model_dump(exclude_unset=True)
+    term_change_requested = any(k in incoming for k in term_fields)
+
+    # block term changes if payments exist
+    if has_payment and term_change_requested:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot edit loan terms because payments already exist. Only limited fields (like loan_account_no) can be updated.",
+        )
+
+    # ---- apply safe updates (always allowed) ----
+    if "loan_account_no" in incoming and incoming["loan_account_no"] is not None:
+        loan.loan_account_no = incoming["loan_account_no"].strip()
+
+    # optional status update (your rules)
+    if "status" in incoming and incoming["status"] is not None:
+        loan.status = incoming["status"].upper()
+
+    # ---- if NO payments and term fields are updated, recompute schedule + disbursement ledger ----
+    if (not has_payment) and term_change_requested:
+        # update loan fields with fallbacks to existing values
+        if "product_id" in incoming and incoming["product_id"] is not None:
+            loan.product_id = incoming["product_id"]
+
+        if "disburse_date" in incoming and incoming["disburse_date"] is not None:
+            loan.disburse_date = incoming["disburse_date"]
+
+        if "first_installment_date" in incoming and incoming["first_installment_date"] is not None:
+            loan.first_installment_date = incoming["first_installment_date"]
+
+        if "duration_weeks" in incoming and incoming["duration_weeks"] is not None:
+            loan.duration_weeks = incoming["duration_weeks"]
+
+        if "principal_amount" in incoming and incoming["principal_amount"] is not None:
+            loan.principal_amount = money(incoming["principal_amount"])
+
+        if "flat_interest_total" in incoming and incoming["flat_interest_total"] is not None:
+            loan.interest_amount_total = money(incoming["flat_interest_total"])
+
+        # recompute totals
+        principal = money(loan.principal_amount)
+        interest_total = money(loan.interest_amount_total)
+        total = money(principal + interest_total)
+
+        loan.total_disbursed_amount = total
+        loan.installment_type = "WEEKLY"
+        loan.installment_amount = money(total / loan.duration_weeks)
+
+        # 1) delete existing installments (since no payments)
+        db.query(LoanInstallment).filter(LoanInstallment.loan_id == loan_id).delete(synchronize_session=False)
+
+        # 2) recreate installments
+        principal_week = money(principal / loan.duration_weeks)
+        interest_week = money(interest_total / loan.duration_weeks)
+
+        due = loan.first_installment_date
+        for i in range(1, loan.duration_weeks + 1):
+            db.add(
+                LoanInstallment(
+                    loan_id=loan.loan_id,
+                    installment_no=i,
+                    due_date=due,
+                    principal_due=principal_week,
+                    interest_due=interest_week,
+                    total_due=money(principal_week + interest_week),
+                    status="PENDING",
+                )
+            )
+            due += timedelta(days=7)
+
+        # 3) reset ledger: since no payments, easiest is wipe and recreate disbursement entry
+        db.query(LoanLedger).filter(LoanLedger.loan_id == loan_id).delete(synchronize_session=False)
+
+        db.add(
+            LoanLedger(
+                loan_id=loan.loan_id,
+                txn_type="DISBURSEMENT",
+                debit=total,
+                credit=money(0),
+                principal_component=principal,
+                interest_component=interest_total,
+                balance_outstanding=total,
+                narration="Loan disbursed (updated terms)",
+            )
+        )
+
+        # also reset advance balance if you want (optional)
+        loan.advance_balance = money(loan.advance_balance or 0)
+
+        # keep status consistent
+        if loan.status not in ("DISBURSED", "ACTIVE", "CLOSED", "CANCELLED"):
+            loan.status = "DISBURSED"
+
+    # commit with unique handling
+    try:
+        db.commit()
+        db.refresh(loan)
+        return loan
+    except IntegrityError as e:
+        db.rollback()
+        msg = str(getattr(e, "orig", e))
+        if "loan_account_no" in msg or "unique" in msg.lower():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Loan account number already exists.",
+            )
+        raise HTTPException(status_code=400, detail="Unable to update loan due to database constraints.")
+
+
+@router.delete("/{loan_id}", status_code=status.HTTP_204_NO_CONTENT)
+def cancel_loan(loan_id: int, db: Session = Depends(get_db)):
+    loan = db.query(Loan).filter(Loan.loan_id == loan_id).first()
+    if not loan:
+        raise HTTPException(404, "Loan not found")
+
+    # already cancelled / closed
+    if loan.status in ("CANCELLED", "CLOSED"):
+        return
+
+    # block cancel if any payment exists
+    has_payment = (
+        db.query(LoanPayment.payment_id)
+        .filter(LoanPayment.loan_id == loan_id)
+        .first()
+        is not None
+    )
+    if has_payment:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot cancel loan because payments exist. Please close the loan instead.",
+        )
+
+    loan.status = "CANCELLED"
+
+    # optional: zero advance balance on cancel
+    loan.advance_balance = money(0)
+
+    db.commit()
+    return
 
 
 # =================================================
