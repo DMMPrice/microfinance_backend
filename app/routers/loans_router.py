@@ -5,7 +5,6 @@ from datetime import timedelta, date, datetime
 from decimal import Decimal
 from typing import Optional
 from sqlalchemy.exc import IntegrityError
-from psycopg2.errors import UniqueViolation
 from starlette import status
 
 from app.utils.database import get_db
@@ -31,22 +30,114 @@ from app.schemas.loan_schema import (
     AdvanceApplyResult,
     LoanStatsOut,
     LoanMasterRowOut,
-    LoanUpdate
+    LoanUpdate,
+    CollectionPaymentCreate,
+)
+
+from app.utils.loan_calculations import (
+    money,
+    compute_interest_total_from_defaults,
+    build_weekly_schedule, compute_interest_total_tenure_flat,
 )
 
 router = APIRouter(prefix="/loans", tags=["Loans"])
 
 
-# -------------------------------------------------
-# Helpers
-# -------------------------------------------------
-def money(x) -> Decimal:
-    return Decimal(str(x)).quantize(Decimal("0.01"))
+def get_setting_decimal(db: Session, key: str, default: str = "0") -> Decimal:
+    row = db.query(SystemSetting).filter(SystemSetting.key == key).first()
+    val = row.value if row and row.value is not None else default
+    try:
+        return Decimal(str(val).strip())
+    except Exception:
+        return Decimal(str(default))
 
 
+def compute_fees_percent_from_settings(db: Session, principal: Decimal):
+    proc_pct = get_setting_decimal(db, "PROCESSING_FEES", "0")  # 3
+    ins_pct = get_setting_decimal(db, "INSURANCE_FEES", "0")  # 1
+    book_price = money(get_setting_decimal(db, "BOOK_PRICE", "0"))  # 40
+
+    processing_fee = money(principal * proc_pct / Decimal("100"))
+    insurance_fee = money(principal * ins_pct / Decimal("100"))
+    fees_total = money(processing_fee + insurance_fee + book_price)
+
+    return insurance_fee, processing_fee, book_price, fees_total
+
+
+# -------------------------------------------------
+# Settings helpers
+# -------------------------------------------------
 def get_setting(db: Session, key: str, default: str) -> str:
     row = db.query(SystemSetting).filter(SystemSetting.key == key).first()
     return row.value if row else default
+
+
+def compute_fee_from_setting(
+        db: Session,
+        key: str,
+        principal: Decimal,
+        default_type: str,
+) -> Decimal:
+    """
+    Reads:
+      KEY = number
+      KEY_TYPE = PERCENT or FIXED (optional)
+
+    If KEY_TYPE is missing, uses default_type.
+
+    Examples:
+      PROCESSING_FEES=3 and PROCESSING_FEES_TYPE=PERCENT => 3% of principal
+      BOOK_PRICE=40 and BOOK_PRICE_TYPE=FIXED => 40
+    """
+    row = db.query(SystemSetting).filter(SystemSetting.key == key).first()
+    raw_val = row.value if row and row.value is not None else "0"
+
+    try:
+        val = Decimal(str(raw_val).strip())
+    except Exception:
+        val = Decimal("0")
+
+    type_row = db.query(SystemSetting).filter(SystemSetting.key == f"{key}_TYPE").first()
+    fee_type = (type_row.value if type_row and type_row.value else default_type).strip().upper()
+
+    if fee_type == "PERCENT":
+        return money(principal * (val / Decimal("100")))
+
+    return money(val)
+
+
+# -------------------------------------------------
+# Settings helpers (add these)
+# -------------------------------------------------
+def get_setting_str(db: Session, key: str, default: str = "") -> str:
+    row = db.query(SystemSetting).filter(SystemSetting.key == key).first()
+    return (row.value or default) if row else default
+
+
+def get_setting_decimal(db: Session, key: str, default: str = "0") -> Decimal:
+    v = get_setting_str(db, key, default)
+    try:
+        return Decimal(str(v).strip())
+    except Exception:
+        return Decimal(str(default))
+
+
+def compute_interest_tenure_flat(principal: Decimal, interest_rate_percent: Decimal) -> Decimal:
+    # ✅ FLAT INTEREST FOR FULL LOAN TENURE
+    return money(principal * interest_rate_percent / Decimal("100"))
+
+
+def compute_fees_from_settings(db: Session, principal: Decimal) -> tuple[Decimal, Decimal, Decimal, Decimal]:
+    # ✅ percent fees from settings
+    proc_pct = get_setting_decimal(db, "PROCESSING_FEES", "0")  # e.g. 3
+    ins_pct = get_setting_decimal(db, "INSURANCE_FEES", "0")  # e.g. 1
+    book_price = money(get_setting_decimal(db, "BOOK_PRICE", "0"))  # e.g. 40
+
+    processing_fee = money(principal * proc_pct / Decimal("100"))
+    insurance_fee = money(principal * ins_pct / Decimal("100"))
+    fees_total = money(processing_fee + insurance_fee + book_price)
+
+    return insurance_fee, processing_fee, book_price, fees_total
 
 
 def last_balance(db: Session, loan_id: int) -> Decimal:
@@ -62,15 +153,6 @@ def last_balance(db: Session, loan_id: int) -> Decimal:
 def alloc_to_installments(db: Session, loan_id: int, amount: Decimal):
     """
     Allocates 'amount' to pending installments in order.
-    Returns:
-      allocations_list, remaining_amount, applied_installments_count, applied_total
-
-    allocations_list contains dicts:
-      - installment_id
-      - installment_no
-      - applied_amount (Decimal)
-      - principal_alloc (Decimal)
-      - interest_alloc  (Decimal)
     """
     amount = money(amount)
     allocations = []
@@ -95,34 +177,21 @@ def alloc_to_installments(db: Session, loan_id: int, amount: Decimal):
 
         apply_amt = due_left if amount >= due_left else amount
 
-        # Split applied amount into principal/interest ratio
-        principal_due = money(inst.principal_due)
-        interest_due = money(inst.interest_due)
-        total_due = money(inst.total_due)
+        principal_left = money(inst.principal_due - (inst.principal_paid or 0))
+        interest_left = money(inst.interest_due - (inst.interest_paid or 0))
 
-        if total_due > 0:
-            pr_ratio = principal_due / total_due
-        else:
-            pr_ratio = Decimal("0")
+        in_add = money(min(apply_amt, interest_left))
+        rem = money(apply_amt - in_add)
+        pr_add = money(min(rem, principal_left))
 
-        pr_add = money(apply_amt * pr_ratio)
-        in_add = money(apply_amt - pr_add)
-
-        # Update installment totals
         inst.total_paid = money(inst.total_paid + apply_amt)
+        inst.principal_paid = money((inst.principal_paid or 0) + pr_add)
+        inst.interest_paid = money((inst.interest_paid or 0) + in_add)
 
-        # If model has principal_paid / interest_paid
-        if hasattr(inst, "principal_paid"):
-            inst.principal_paid = money((inst.principal_paid or 0) + pr_add)
-        if hasattr(inst, "interest_paid"):
-            inst.interest_paid = money((inst.interest_paid or 0) + in_add)
-
-        # Status update
         new_due_left = money(inst.total_due - inst.total_paid)
         if new_due_left <= 0:
             inst.status = "PAID"
-            if hasattr(inst, "paid_date"):
-                inst.paid_date = date.today()
+            inst.paid_date = date.today()
             applied_installments += 1
         else:
             inst.status = "PENDING"
@@ -144,14 +213,11 @@ def alloc_to_installments(db: Session, loan_id: int, amount: Decimal):
 
 
 # =================================================
-# 🔹 STATIC ROUTES (ALWAYS FIRST)
+# 🔹 STATS
 # =================================================
 @router.get("/stats", response_model=LoanStatsOut)
 def loan_stats(db: Session = Depends(get_db)):
-    rows = db.execute(
-        text("select status, count(*) as c from loans group by status")
-    ).mappings().all()
-
+    rows = db.execute(text("select status, count(*) as c from loans group by status")).mappings().all()
     out = LoanStatsOut()
     for r in rows:
         s = (r["status"] or "").upper()
@@ -162,15 +228,15 @@ def loan_stats(db: Session = Depends(get_db)):
     return out
 
 
+# =================================================
+# 🔹 INSTALLMENTS DUE (simple list)
+# =================================================
 @router.get("/installments/due")
-def installments_due(
-        as_on: Optional[date] = Query(None),
-        db: Session = Depends(get_db),
-):
+def installments_due(as_on: Optional[date] = Query(None), db: Session = Depends(get_db)):
     sql = """
           select i.installment_id,
                  i.loan_id,
-                 l.loan_account_no, -- ✅ added
+                 l.loan_account_no,
                  i.installment_no,
                  i.due_date,
                  (i.total_due - i.total_paid) as due_left,
@@ -185,24 +251,22 @@ def installments_due(
                    join groups g on g.group_id = l.group_id
           where i.status <> 'PAID'
             and l.status in ('DISBURSED', 'ACTIVE')
+            and m.is_active = true
           """
 
     params = {}
-
-    # ✅ apply date filter only if as_on is provided
     if as_on:
         sql += " and i.due_date <= :as_on"
         params["as_on"] = as_on
 
     sql += " order by i.due_date asc"
-
     rows = db.execute(text(sql), params).mappings().all()
 
     return [
         {
             "installment_id": r["installment_id"],
             "loan_id": r["loan_id"],
-            "loan_account_no": r["loan_account_no"],  # ✅ added
+            "loan_account_no": r["loan_account_no"],
             "installment_no": r["installment_no"],
             "due_date": r["due_date"],
             "due_left": float(r["due_left"]),
@@ -218,24 +282,20 @@ def installments_due(
 
 @router.get("/by-member/{member_id}", response_model=list[LoanListOut])
 def loans_by_member(member_id: int, db: Session = Depends(get_db)):
-    return (
-        db.query(Loan)
-        .filter(Loan.member_id == member_id)
-        .order_by(Loan.loan_id.desc())
-        .all()
-    )
+    return db.query(Loan).filter(Loan.member_id == member_id).order_by(Loan.loan_id.desc()).all()
 
 
 @router.get("/by-group/{group_id}", response_model=list[LoanListOut])
-def loans_by_group(
-        group_id: int, status: Optional[str] = None, db: Session = Depends(get_db)
-):
+def loans_by_group(group_id: int, status_: Optional[str] = None, db: Session = Depends(get_db)):
     q = db.query(Loan).filter(Loan.group_id == group_id)
-    if status:
-        q = q.filter(Loan.status == status)
+    if status_:
+        q = q.filter(Loan.status == status_)
     return q.order_by(Loan.loan_id.desc()).all()
 
 
+# =================================================
+# ✅ COLLECTION LIST (FIXED + includes installment_amount)
+# =================================================
 @router.get("/collections/by-lo", response_model=list[CollectionRowOut])
 def collections_by_lo(
         lo_id: Optional[int] = Query(None),
@@ -244,12 +304,15 @@ def collections_by_lo(
 ):
     sql = """
           select l.loan_id,
+                 l.loan_account_no,
+                 l.installment_amount,
                  m.member_id,
                  m.full_name                  as member_name,
                  g.group_id,
                  g.group_name,
                  i.due_date,
                  i.installment_no,
+                 i.total_due                  as total_due,
                  (i.total_due - i.total_paid) as due_left,
                  l.advance_balance,
                  i.status
@@ -258,17 +321,15 @@ def collections_by_lo(
                    join groups g on g.group_id = l.group_id
                    join loan_installments i on i.loan_id = l.loan_id
           where l.status in ('DISBURSED', 'ACTIVE')
-            and i.status <> 'PAID' \
+            and i.status <> 'PAID'
+            and m.is_active = true
           """
 
     params = {}
-
-    # ✅ optional LO filter
     if lo_id is not None:
         sql += " and l.lo_id = :loid"
         params["loid"] = lo_id
 
-    # ✅ optional date filter
     if as_on:
         sql += " and i.due_date <= :as_on"
         params["as_on"] = as_on
@@ -280,12 +341,15 @@ def collections_by_lo(
     return [
         CollectionRowOut(
             loan_id=r["loan_id"],
+            loan_account_no=r["loan_account_no"],
+            installment_amount=float(r["installment_amount"]),
             member_id=r["member_id"],
             member_name=r["member_name"],
             group_id=r["group_id"],
             group_name=r["group_name"],
             due_date=r["due_date"],
             installment_no=r["installment_no"],
+            total_due=float(r["total_due"]),
             due_left=float(r["due_left"]),
             advance_balance=float(r["advance_balance"]),
             status=r["status"],
@@ -295,11 +359,11 @@ def collections_by_lo(
 
 
 # =================================================
-# 🔹 MASTER LIST (KEEP THIS ABOVE /{loan_id}/... ROUTES)
+# 🔹 MASTER LIST
 # =================================================
 @router.get("/master", response_model=list[LoanMasterRowOut])
 def loan_master(
-        status: Optional[str] = None,
+        status_: Optional[str] = None,
         region_id: Optional[int] = None,
         branch_id: Optional[int] = None,
         lo_id: Optional[int] = None,
@@ -315,7 +379,7 @@ def loan_master(
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
 
-    status_norm = status.upper() if status else None
+    status_norm = status_.upper() if status_ else None
 
     sql = text(
         """
@@ -424,7 +488,7 @@ def loan_master(
 
 
 # =================================================
-# 🔹 LOAN CREATION
+# ✅ LOAN CREATE (interest computed + fees in first installment)
 # =================================================
 @router.post("", response_model=LoanOut)
 def create_loan(payload: LoanCreate, db: Session = Depends(get_db)):
@@ -443,13 +507,28 @@ def create_loan(payload: LoanCreate, db: Session = Depends(get_db)):
     if not member:
         raise HTTPException(404, "Member not found / inactive")
 
-    min_weeks = int(get_setting(db, "MIN_WEEKS_BEFORE_CLOSURE", "4"))
+    min_weeks = int(get_setting_str(db, "MIN_WEEKS_BEFORE_CLOSURE", "4"))
 
     principal = money(payload.principal_amount)
-    interest_total = money(payload.flat_interest_total)
-    total = principal + interest_total
 
-    installment_amount = (total / payload.duration_weeks).quantize(Decimal("0.01"))
+    # ✅ Interest Rate from DB (TENURE FLAT)
+    interest_rate = get_setting_decimal(db, "INTEREST_RATE", "0")  # 12.5
+    interest_total = compute_interest_tenure_flat(principal, interest_rate)  # ✅ 2750 for 22000
+
+    # ✅ Fees from DB as % of principal + fixed book price
+    insurance_fee, processing_fee, book_price, fees_total = compute_fees_from_settings(db, principal)
+    # for 22000: insurance=220, processing=660, book=40 => fees_total=920
+
+    # ✅ total outstanding includes fees because collected in installment 1
+    total = money(principal + interest_total + fees_total)
+
+    # ✅ weekly base installment excludes fees
+    principal_week, interest_week, base_installment, first_extra = build_weekly_schedule(
+        principal=principal,
+        interest_total=interest_total,
+        duration_weeks=payload.duration_weeks,
+        fees_total=fees_total,  # ✅ important
+    )
 
     loan = Loan(
         loan_account_no=payload.loan_account_no,
@@ -466,7 +545,7 @@ def create_loan(payload: LoanCreate, db: Session = Depends(get_db)):
         principal_amount=principal,
         interest_amount_total=interest_total,
         total_disbursed_amount=total,
-        installment_amount=installment_amount,
+        installment_amount=base_installment,  # base weekly (without fees)
         min_weeks_before_closure=min_weeks,
         allow_early_closure=False,
         advance_balance=money(0),
@@ -475,26 +554,30 @@ def create_loan(payload: LoanCreate, db: Session = Depends(get_db)):
 
     try:
         db.add(loan)
-        db.flush()  # ✅ will raise IntegrityError if unique constraint violated
-
-        principal_week = (principal / payload.duration_weeks).quantize(Decimal("0.01"))
-        interest_week = (interest_total / payload.duration_weeks).quantize(Decimal("0.01"))
+        db.flush()
 
         due = payload.first_installment_date
         for i in range(1, payload.duration_weeks + 1):
+            extra = first_extra if i == 1 else money(0)
+            total_due = money(base_installment + extra)
+
+            # ✅ Put all fees into interest bucket for first installment (so allocation works)
+            inst_interest_due = money(interest_week + extra) if i == 1 else interest_week
+
             db.add(
                 LoanInstallment(
                     loan_id=loan.loan_id,
                     installment_no=i,
                     due_date=due,
                     principal_due=principal_week,
-                    interest_due=interest_week,
-                    total_due=(principal_week + interest_week),
+                    interest_due=inst_interest_due,
+                    total_due=total_due,
                     status="PENDING",
                 )
             )
             due += timedelta(days=7)
 
+        # ✅ ledger interest component includes fees since outstanding includes fees
         db.add(
             LoanLedger(
                 loan_id=loan.loan_id,
@@ -502,9 +585,9 @@ def create_loan(payload: LoanCreate, db: Session = Depends(get_db)):
                 debit=total,
                 credit=money(0),
                 principal_component=principal,
-                interest_component=interest_total,
+                interest_component=money(interest_total + fees_total),
                 balance_outstanding=total,
-                narration="Loan disbursed",
+                narration=f"Loan disbursed (Fees: ins={insurance_fee}, proc={processing_fee}, book={book_price})",
             )
         )
 
@@ -514,125 +597,153 @@ def create_loan(payload: LoanCreate, db: Session = Depends(get_db)):
 
     except IntegrityError as e:
         db.rollback()
-
-        # ✅ detect your specific constraint and return 409 (instead of 500)
-        msg = ""
-        if getattr(e, "orig", None):
-            msg = str(e.orig)
-        else:
-            msg = str(e)
-
+        msg = str(getattr(e, "orig", e))
         if "ux_one_active_loan_per_member" in msg:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="This member already has an active loan. Please close the existing loan before creating a new one.",
             )
-
-        # fallback (any other constraint / db issues)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Unable to create loan due to database constraints.",
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Unable to create loan due to database constraints.")
     except Exception:
         db.rollback()
         raise
 
 
+# =================================================
+# ✅ LOAN UPDATE (allowed only if no payment exists)
+# =================================================
 @router.put("/{loan_id}", response_model=LoanOut)
 def update_loan(loan_id: int, payload: LoanUpdate, db: Session = Depends(get_db)):
     loan = db.query(Loan).filter(Loan.loan_id == loan_id).first()
     if not loan:
         raise HTTPException(404, "Loan not found")
 
-    # check if any payment exists
     has_payment = (
-        db.query(LoanPayment.payment_id)
-        .filter(LoanPayment.loan_id == loan_id)
-        .first()
-        is not None
+            db.query(LoanPayment.payment_id)
+            .filter(LoanPayment.loan_id == loan_id)
+            .first()
+            is not None
     )
 
-    # detect "term-changing" fields
     term_fields = {
         "product_id",
         "disburse_date",
         "first_installment_date",
         "duration_weeks",
         "principal_amount",
-        "flat_interest_total",
+        "insurance_fee",
+        "processing_fee",
+        "book_price",
     }
     incoming = payload.model_dump(exclude_unset=True)
     term_change_requested = any(k in incoming for k in term_fields)
 
-    # block term changes if payments exist
     if has_payment and term_change_requested:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Cannot edit loan terms because payments already exist. Only limited fields (like loan_account_no) can be updated.",
+            detail="Cannot edit loan terms because payments already exist. Only loan_account_no/status can be updated.",
         )
 
-    # ---- apply safe updates (always allowed) ----
-    if "loan_account_no" in incoming and incoming["loan_account_no"] is not None:
-        loan.loan_account_no = incoming["loan_account_no"].strip()
+    # ---------------- basic updates ----------------
+    if incoming.get("loan_account_no") is not None:
+        loan.loan_account_no = str(incoming["loan_account_no"]).strip()
 
-    # optional status update (your rules)
-    if "status" in incoming and incoming["status"] is not None:
-        loan.status = incoming["status"].upper()
+    if incoming.get("status") is not None:
+        loan.status = str(incoming["status"]).upper()
 
-    # ---- if NO payments and term fields are updated, recompute schedule + disbursement ledger ----
+    # ---------------- term updates (only if no payments) ----------------
     if (not has_payment) and term_change_requested:
-        # update loan fields with fallbacks to existing values
-        if "product_id" in incoming and incoming["product_id"] is not None:
+        if incoming.get("product_id") is not None:
             loan.product_id = incoming["product_id"]
 
-        if "disburse_date" in incoming and incoming["disburse_date"] is not None:
+        if incoming.get("disburse_date") is not None:
             loan.disburse_date = incoming["disburse_date"]
 
-        if "first_installment_date" in incoming and incoming["first_installment_date"] is not None:
+        if incoming.get("first_installment_date") is not None:
             loan.first_installment_date = incoming["first_installment_date"]
 
-        if "duration_weeks" in incoming and incoming["duration_weeks"] is not None:
-            loan.duration_weeks = incoming["duration_weeks"]
+        if incoming.get("duration_weeks") is not None:
+            loan.duration_weeks = int(incoming["duration_weeks"])
 
-        if "principal_amount" in incoming and incoming["principal_amount"] is not None:
+        if incoming.get("principal_amount") is not None:
             loan.principal_amount = money(incoming["principal_amount"])
 
-        if "flat_interest_total" in incoming and incoming["flat_interest_total"] is not None:
-            loan.interest_amount_total = money(incoming["flat_interest_total"])
-
-        # recompute totals
+        # ✅ principal after potential update
         principal = money(loan.principal_amount)
-        interest_total = money(loan.interest_amount_total)
-        total = money(principal + interest_total)
 
-        loan.total_disbursed_amount = total
-        loan.installment_type = "WEEKLY"
-        loan.installment_amount = money(total / loan.duration_weeks)
+        # ✅ Fees: override if provided; else compute from settings
+        insurance_fee = money(incoming["insurance_fee"]) if incoming.get("insurance_fee") is not None else None
+        processing_fee = money(incoming["processing_fee"]) if incoming.get("processing_fee") is not None else None
+        book_price = money(incoming["book_price"]) if incoming.get("book_price") is not None else None
 
-        # 1) delete existing installments (since no payments)
+        if insurance_fee is None:
+            insurance_fee = compute_fee_from_setting(db, "INSURANCE_FEES", principal, default_type="PERCENT")
+        if processing_fee is None:
+            processing_fee = compute_fee_from_setting(db, "PROCESSING_FEES", principal, default_type="PERCENT")
+        if book_price is None:
+            book_price = compute_fee_from_setting(db, "BOOK_PRICE", principal, default_type="FIXED")
+
+        fees_total = money(insurance_fee + processing_fee + book_price)
+
+        # ✅ Interest Rate from settings
+        interest_rate = Decimal(get_setting(db, "INTEREST_RATE", "0"))
+
+        # ✅ TENURE-FLAT interest (matches 538.04 base for 22,000 @12.5% over 46 weeks)
+        interest_total = compute_interest_total_tenure_flat(
+            principal=principal,
+            interest_rate_percent=interest_rate,
+        )
+
+        # (If you want ANNUAL prorated by weeks instead, use this and comment the flat line above)
+        # week_divider = Decimal(get_setting(db, "INTEREST_WEEK_DIVIDER", "52"))
+        # interest_total = compute_interest_total_from_defaults(
+        #     principal=principal,
+        #     interest_rate_percent=interest_rate,
+        #     week_divider=week_divider,
+        #     duration_weeks=loan.duration_weeks,
+        # )
+
+        loan.interest_amount_total = interest_total
+
+        # ✅ base weekly installment excludes fees; fees collected only in installment #1
+        principal_week, interest_week, base_installment, first_extra = build_weekly_schedule(
+            principal=principal,
+            interest_total=interest_total,
+            duration_weeks=loan.duration_weeks,
+            fees_total=fees_total,
+        )
+
+        loan.installment_amount = base_installment
+        loan.total_disbursed_amount = money(principal + interest_total + fees_total)
+
+        # ---------------- recreate schedule ----------------
         db.query(LoanInstallment).filter(LoanInstallment.loan_id == loan_id).delete(synchronize_session=False)
-
-        # 2) recreate installments
-        principal_week = money(principal / loan.duration_weeks)
-        interest_week = money(interest_total / loan.duration_weeks)
 
         due = loan.first_installment_date
         for i in range(1, loan.duration_weeks + 1):
+            extra = first_extra if i == 1 else money(0)
+            total_due = money(base_installment + extra)
+
+            # ✅ fees go into interest_due for first installment (keeps allocation correct)
+            inst_interest_due = money(interest_week + extra) if i == 1 else interest_week
+
             db.add(
                 LoanInstallment(
                     loan_id=loan.loan_id,
                     installment_no=i,
                     due_date=due,
                     principal_due=principal_week,
-                    interest_due=interest_week,
-                    total_due=money(principal_week + interest_week),
+                    interest_due=inst_interest_due,
+                    total_due=total_due,
                     status="PENDING",
                 )
             )
             due += timedelta(days=7)
 
-        # 3) reset ledger: since no payments, easiest is wipe and recreate disbursement entry
+        # ---------------- reset ledger (since no payments) ----------------
         db.query(LoanLedger).filter(LoanLedger.loan_id == loan_id).delete(synchronize_session=False)
+        total = money(loan.total_disbursed_amount)
 
         db.add(
             LoanLedger(
@@ -641,24 +752,24 @@ def update_loan(loan_id: int, payload: LoanUpdate, db: Session = Depends(get_db)
                 debit=total,
                 credit=money(0),
                 principal_component=principal,
-                interest_component=interest_total,
+                # outstanding includes fees, so keep them in interest_component bucket
+                interest_component=money(interest_total + fees_total),
                 balance_outstanding=total,
-                narration="Loan disbursed (updated terms)",
+                narration=(
+                    f"Loan disbursed (updated terms) "
+                    f"(Fees: ins={insurance_fee}, proc={processing_fee}, book={book_price})"
+                ),
             )
         )
 
-        # also reset advance balance if you want (optional)
-        loan.advance_balance = money(loan.advance_balance or 0)
-
-        # keep status consistent
-        if loan.status not in ("DISBURSED", "ACTIVE", "CLOSED", "CANCELLED"):
+        if loan.status not in ("DISBURSED", "ACTIVE", "CLOSED", "CANCELLED", "INACTIVE"):
             loan.status = "DISBURSED"
 
-    # commit with unique handling
     try:
         db.commit()
         db.refresh(loan)
         return loan
+
     except IntegrityError as e:
         db.rollback()
         msg = str(getattr(e, "orig", e))
@@ -667,43 +778,37 @@ def update_loan(loan_id: int, payload: LoanUpdate, db: Session = Depends(get_db)
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Loan account number already exists.",
             )
-        raise HTTPException(status_code=400, detail="Unable to update loan due to database constraints.")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unable to update loan due to database constraints.",
+        )
 
 
-@router.delete("/{loan_id}", status_code=status.HTTP_204_NO_CONTENT)
-def cancel_loan(loan_id: int, db: Session = Depends(get_db)):
+# =================================================
+# ✅ LOAN DEACTIVATE (soft delete)
+# =================================================
+@router.patch("/{loan_id}/deactivate", response_model=LoanOut)
+def deactivate_loan(loan_id: int, db: Session = Depends(get_db)):
     loan = db.query(Loan).filter(Loan.loan_id == loan_id).first()
     if not loan:
         raise HTTPException(404, "Loan not found")
 
-    # already cancelled / closed
-    if loan.status in ("CANCELLED", "CLOSED"):
-        return
-
-    # block cancel if any payment exists
-    has_payment = (
-        db.query(LoanPayment.payment_id)
-        .filter(LoanPayment.loan_id == loan_id)
-        .first()
-        is not None
-    )
+    # block if payments exist (optional rule)
+    has_payment = db.query(LoanPayment.payment_id).filter(LoanPayment.loan_id == loan_id).first() is not None
     if has_payment:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Cannot cancel loan because payments exist. Please close the loan instead.",
+            detail="Cannot deactivate loan because payments exist. Close the loan instead.",
         )
 
-    loan.status = "CANCELLED"
-
-    # optional: zero advance balance on cancel
-    loan.advance_balance = money(0)
-
+    loan.status = "INACTIVE"
     db.commit()
-    return
+    db.refresh(loan)
+    return loan
 
 
 # =================================================
-# 🔹 DYNAMIC ROUTES (LAST)
+# 🔹 SUMMARY / SCHEDULE / STATEMENT
 # =================================================
 @router.get("/{loan_id}/summary", response_model=LoanSummaryOut)
 def loan_summary(loan_id: int, db: Session = Depends(get_db)):
@@ -774,7 +879,7 @@ def statement(loan_id: int, db: Session = Depends(get_db)):
 
 
 # =================================================
-# ✅ PAYMENTS (schema-aligned)
+# ✅ PAYMENTS (used by collection)
 # =================================================
 @router.post("/{loan_id}/payments", response_model=PaymentResult)
 def create_payment(loan_id: int, payload: PaymentCreate, db: Session = Depends(get_db)):
@@ -789,22 +894,18 @@ def create_payment(loan_id: int, payload: PaymentCreate, db: Session = Depends(g
     if pay_amount <= 0:
         raise HTTPException(400, "Payment amount must be > 0")
 
-    # Allocate to installments
     allocations, remaining, applied_installments, applied_total = alloc_to_installments(
         db=db, loan_id=loan_id, amount=pay_amount
     )
 
-    # Remaining becomes advance
     if remaining > 0:
         loan.advance_balance = money(loan.advance_balance + remaining)
 
     pay_dt: datetime = payload.payment_date or datetime.now()
 
-    # Sum principal/interest applied (for ledger)
     total_principal = money(sum((a["principal_alloc"] for a in allocations), Decimal("0")))
     total_interest = money(sum((a["interest_alloc"] for a in allocations), Decimal("0")))
 
-    # ✅ Insert payment header (NOT NULL columns included)
     payment = LoanPayment(
         loan_id=loan_id,
         member_id=loan.member_id,
@@ -814,13 +915,12 @@ def create_payment(loan_id: int, payload: PaymentCreate, db: Session = Depends(g
         amount_received=pay_amount,
         payment_mode=payload.payment_mode,
         receipt_no=payload.receipt_no,
-        collected_by=None,  # set from auth later if needed
+        collected_by=None,
         remarks=payload.remarks,
     )
     db.add(payment)
-    db.flush()  # gives payment.payment_id
+    db.flush()
 
-    # ✅ Insert allocations using correct columns
     for a in allocations:
         db.add(
             LoanPaymentAllocation(
@@ -831,7 +931,6 @@ def create_payment(loan_id: int, payload: PaymentCreate, db: Session = Depends(g
             )
         )
 
-    # Ledger update: only applied_total reduces outstanding
     prev_bal = last_balance(db, loan_id)
     new_bal = money(prev_bal - applied_total)
 
@@ -844,8 +943,7 @@ def create_payment(loan_id: int, payload: PaymentCreate, db: Session = Depends(g
             principal_component=total_principal,
             interest_component=total_interest,
             balance_outstanding=new_bal,
-            narration=f"Payment received (Receipt: {payload.receipt_no})"
-            if payload.receipt_no else "Payment received",
+            narration=f"Payment received (Receipt: {payload.receipt_no})" if payload.receipt_no else "Payment received",
         )
     )
 
@@ -863,7 +961,6 @@ def create_payment(loan_id: int, payload: PaymentCreate, db: Session = Depends(g
             )
         )
 
-    # ✅ Status updates (after ledger)
     if new_bal <= 0:
         loan.status = "CLOSED"
     elif loan.status == "DISBURSED" and applied_total > 0:
@@ -880,7 +977,22 @@ def create_payment(loan_id: int, payload: PaymentCreate, db: Session = Depends(g
 
 
 # =================================================
-# ✅ APPLY ADVANCE (UPDATED TO MATCH ALLOCATIONS)
+# ✅ COLLECTION ENTRY (shortcut API for UI)
+# =================================================
+@router.post("/collections/entry", response_model=PaymentResult)
+def collection_entry(payload: CollectionPaymentCreate, db: Session = Depends(get_db)):
+    payment_payload = PaymentCreate(
+        payment_date=payload.payment_date,
+        amount_received=payload.amount_received,
+        payment_mode=payload.payment_mode,
+        receipt_no=payload.receipt_no,
+        remarks=payload.remarks,
+    )
+    return create_payment(loan_id=payload.loan_id, payload=payment_payload, db=db)
+
+
+# =================================================
+# ✅ APPLY ADVANCE (only once – removed duplicate)
 # =================================================
 @router.post("/{loan_id}/apply-advance", response_model=AdvanceApplyResult)
 def apply_advance_balance(loan_id: int, db: Session = Depends(get_db)):
@@ -916,58 +1028,6 @@ def apply_advance_balance(loan_id: int, db: Session = Depends(get_db)):
             credit=applied_total,
             principal_component=total_principal,
             interest_component=total_interest,
-            balance_outstanding=new_bal,
-            narration="Advance applied to installments",
-        )
-    )
-
-    if new_bal <= 0:
-        loan.status = "CLOSED"
-
-    db.commit()
-
-    return AdvanceApplyResult(
-        applied_installments=applied_installments,
-        used_advance=float(applied_total),
-        remaining_advance=float(loan.advance_balance),
-    )
-
-
-# =================================================
-# ✅ APPLY ADVANCE (schema-aligned)
-# =================================================
-@router.post("/{loan_id}/apply-advance", response_model=AdvanceApplyResult)
-def apply_advance_balance(loan_id: int, db: Session = Depends(get_db)):
-    loan = db.query(Loan).filter(Loan.loan_id == loan_id).first()
-    if not loan:
-        raise HTTPException(404, "Loan not found")
-
-    adv = money(loan.advance_balance)
-    if adv <= 0:
-        return AdvanceApplyResult(
-            applied_installments=0,
-            used_advance=0.0,
-            remaining_advance=float(loan.advance_balance),
-        )
-
-    allocations, remaining, applied_installments, applied_total = alloc_to_installments(
-        db=db, loan_id=loan_id, amount=adv
-    )
-
-    # reduce advance balance
-    loan.advance_balance = remaining
-
-    prev_bal = last_balance(db, loan_id)
-    new_bal = money(prev_bal - applied_total)
-
-    db.add(
-        LoanLedger(
-            loan_id=loan_id,
-            txn_type="ADVANCE_APPLY",
-            debit=money(0),
-            credit=applied_total,
-            principal_component=money(0),
-            interest_component=money(0),
             balance_outstanding=new_bal,
             narration="Advance applied to installments",
         )

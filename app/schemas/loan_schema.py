@@ -1,21 +1,45 @@
 from pydantic import BaseModel, Field, field_validator, constr
 from datetime import date, datetime
-from typing import Optional, List, Literal
+from typing import Optional, Literal
 from decimal import Decimal
 
 
 class LoanCreate(BaseModel):
     member_id: int
     product_id: Optional[int] = None
-
     loan_account_no: Optional[str] = None
 
     disburse_date: date
     first_installment_date: date
 
     principal_amount: float = Field(gt=0)
-    flat_interest_total: float = Field(ge=0)
     duration_weeks: int = Field(gt=0)
+
+    # ✅ frontend sends fees (first installment contains this)
+    insurance_fee: float = Field(default=0, ge=0)
+    processing_fee: float = Field(default=0, ge=0)
+
+    # ❌ interest_total is NOT sent from frontend anymore
+    # backend will compute it from default setting INTEREST_RATE and WEEK_DIVIDER
+
+
+class LoanUpdate(BaseModel):
+    # editable identifiers
+    loan_account_no: Optional[constr(strip_whitespace=True, min_length=3, max_length=50)] = None
+
+    # core loan terms (allow only when NO payments exist)
+    product_id: Optional[int] = None
+    disburse_date: Optional[date] = None
+    first_installment_date: Optional[date] = None
+    duration_weeks: Optional[int] = None
+    principal_amount: Optional[Decimal] = None
+
+    # ✅ fees editable only if no payment exists (optional)
+    insurance_fee: Optional[Decimal] = None
+    processing_fee: Optional[Decimal] = None
+
+    # optional status update
+    status: Optional[str] = None  # DISBURSED/ACTIVE/CLOSED/CANCELLED/INACTIVE
 
 
 class LoanOut(BaseModel):
@@ -80,6 +104,15 @@ class PaymentResult(BaseModel):
     new_advance_balance: float
 
 
+class CollectionPaymentCreate(BaseModel):
+    loan_id: int
+    payment_date: Optional[datetime] = None
+    amount_received: float = Field(gt=0)
+    payment_mode: Literal["CASH", "UPI", "BANK", "CARD", "OTHER"] = "CASH"
+    receipt_no: Optional[str] = None
+    remarks: Optional[str] = None
+
+
 class LedgerRowOut(BaseModel):
     ledger_id: int
     txn_date: datetime
@@ -138,13 +171,19 @@ class LoanListOut(BaseModel):
 
 class CollectionRowOut(BaseModel):
     loan_id: int
+    loan_account_no: Optional[str] = None
+    installment_amount: float
+
     member_id: int
     member_name: str
     group_id: int
     group_name: str
+
     due_date: date
     installment_no: int
     due_left: float
+    total_due: float
+
     advance_balance: float
     status: str
 
@@ -193,18 +232,3 @@ class LoanMasterRowOut(BaseModel):
     advance_balance: float
 
     status: str
-
-class LoanUpdate(BaseModel):
-    # editable identifiers
-    loan_account_no: Optional[constr(strip_whitespace=True, min_length=3, max_length=50)] = None
-
-    # core loan terms (allow only when NO payments exist)
-    product_id: Optional[int] = None
-    disburse_date: Optional[date] = None
-    first_installment_date: Optional[date] = None
-    duration_weeks: Optional[int] = None
-    principal_amount: Optional[Decimal] = None
-    flat_interest_total: Optional[Decimal] = None  # (maps to interest_amount_total)
-
-    # optional admin edits (if you want)
-    status: Optional[str] = None  # e.g. DISBURSED/ACTIVE/CLOSED/CANCELLED

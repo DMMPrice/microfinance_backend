@@ -39,7 +39,11 @@ class Loan(Base):
     # advance / extra money
     advance_balance = Column(Numeric(12, 2), nullable=False, default=0)
 
-    status = Column(String(20), nullable=False, default="DISBURSED")  # DISBURSED/ACTIVE/CLOSED/...
+    # ✅ soft deactivate
+    is_active = Column(Boolean, nullable=False, default=True)
+    deactivated_on = Column(DateTime, nullable=True)
+
+    status = Column(String(20), nullable=False, default="DISBURSED")  # DISBURSED/ACTIVE/CLOSED/CANCELLED/DEACTIVATED
     closing_date = Column(Date, nullable=True)
 
     created_by = Column(Integer, ForeignKey("users.user_id"), nullable=True)
