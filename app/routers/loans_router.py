@@ -64,6 +64,28 @@ def compute_fees_percent_from_settings(db: Session, principal: Decimal):
     return insurance_fee, processing_fee, book_price, fees_total
 
 
+
+# -------- shared resolver --------
+def _resolve_loan(
+    db: Session,
+    loan_id: Optional[int] = None,
+    loan_account_no: Optional[str] = None,
+) -> Loan:
+    if loan_id is not None:
+        loan = db.query(Loan).filter(Loan.loan_id == loan_id).first()
+    elif loan_account_no:
+        loan = db.query(Loan).filter(Loan.loan_account_no == loan_account_no).first()
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Either loan_id or loan_account_no is required",
+        )
+
+    if not loan:
+        raise HTTPException(status_code=404, detail="Loan not found")
+
+    return loan
+
 # -------------------------------------------------
 # Settings helpers
 # -------------------------------------------------
@@ -811,10 +833,8 @@ def deactivate_loan(loan_id: int, db: Session = Depends(get_db)):
 # 🔹 SUMMARY / SCHEDULE / STATEMENT
 # =================================================
 @router.get("/{loan_id}/summary", response_model=LoanSummaryOut)
-def loan_summary(loan_id: int, db: Session = Depends(get_db)):
-    loan = db.query(Loan).filter(Loan.loan_id == loan_id).first()
-    if not loan:
-        raise HTTPException(404, "Loan not found")
+def loan_summary_by_id(loan_id: int, db: Session = Depends(get_db)):
+    loan = _resolve_loan(db, loan_id=loan_id)
 
     member = db.query(Member).filter(Member.member_id == loan.member_id).first()
     group = db.query(Group).filter(Group.group_id == loan.group_id).first()
@@ -828,12 +848,12 @@ def loan_summary(loan_id: int, db: Session = Depends(get_db)):
               and txn_type = 'PAYMENT'
             """
         ),
-        {"lid": loan_id},
+        {"lid": loan.loan_id},
     ).mappings().first()["paid"]
 
     next_inst = (
         db.query(LoanInstallment)
-        .filter(LoanInstallment.loan_id == loan_id, LoanInstallment.status != "PAID")
+        .filter(LoanInstallment.loan_id == loan.loan_id, LoanInstallment.status != "PAID")
         .order_by(LoanInstallment.installment_no.asc())
         .first()
     )
@@ -850,7 +870,7 @@ def loan_summary(loan_id: int, db: Session = Depends(get_db)):
         interest_amount_total=float(loan.interest_amount_total),
         total_disbursed_amount=float(loan.total_disbursed_amount),
         total_paid=float(total_paid),
-        outstanding=float(last_balance(db, loan_id)),
+        outstanding=float(last_balance(db, loan.loan_id)),
         advance_balance=float(loan.advance_balance),
         status=loan.status,
         next_due_date=next_inst.due_date if next_inst else None,
@@ -858,24 +878,47 @@ def loan_summary(loan_id: int, db: Session = Depends(get_db)):
     )
 
 
+@router.get("/by-account/{loan_account_no}/summary", response_model=LoanSummaryOut)
+def loan_summary_by_account(loan_account_no: str, db: Session = Depends(get_db)):
+    loan = _resolve_loan(db, loan_account_no=loan_account_no)
+    # reuse the same logic by calling the id version
+    return loan_summary_by_id(loan.loan_id, db)
+
+
+# ========================= SCHEDULE =========================
 @router.get("/{loan_id}/schedule", response_model=list[InstallmentOut])
-def get_schedule(loan_id: int, db: Session = Depends(get_db)):
+def get_schedule_by_id(loan_id: int, db: Session = Depends(get_db)):
+    loan = _resolve_loan(db, loan_id=loan_id)
     return (
         db.query(LoanInstallment)
-        .filter(LoanInstallment.loan_id == loan_id)
+        .filter(LoanInstallment.loan_id == loan.loan_id)
         .order_by(LoanInstallment.installment_no.asc())
         .all()
     )
 
 
+@router.get("/by-account/{loan_account_no}/schedule", response_model=list[InstallmentOut])
+def get_schedule_by_account(loan_account_no: str, db: Session = Depends(get_db)):
+    loan = _resolve_loan(db, loan_account_no=loan_account_no)
+    return get_schedule_by_id(loan.loan_id, db)
+
+
+# ========================= STATEMENT =========================
 @router.get("/{loan_id}/statement", response_model=list[LedgerRowOut])
-def statement(loan_id: int, db: Session = Depends(get_db)):
+def statement_by_id(loan_id: int, db: Session = Depends(get_db)):
+    loan = _resolve_loan(db, loan_id=loan_id)
     return (
         db.query(LoanLedger)
-        .filter(LoanLedger.loan_id == loan_id)
+        .filter(LoanLedger.loan_id == loan.loan_id)
         .order_by(LoanLedger.ledger_id.asc())
         .all()
     )
+
+
+@router.get("/by-account/{loan_account_no}/statement", response_model=list[LedgerRowOut])
+def statement_by_account(loan_account_no: str, db: Session = Depends(get_db)):
+    loan = _resolve_loan(db, loan_account_no=loan_account_no)
+    return statement_by_id(loan.loan_id, db)
 
 
 # =================================================
