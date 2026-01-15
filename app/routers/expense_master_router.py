@@ -13,7 +13,7 @@ from app.schemas.expense_schemas import (
     ExpenseCategoryUpdate,
     ExpenseSubCategoryCreate,
     ExpenseSubCategoryOut,
-    ExpenseSubCategoryUpdate,
+    ExpenseSubCategoryUpdate, PaymentType,
 )
 
 router = APIRouter(prefix="/expenses/master", tags=["Expense Master"])
@@ -140,6 +140,7 @@ def create_subcategory(payload: ExpenseSubCategoryCreate, db: Session = Depends(
         category_id=payload.category_id,
         subcategory_name=payload.subcategory_name,
         is_active=payload.is_active,
+        payment_type=payload.payment_type,  # ✅ NEW
     )
     db.add(sub)
     db.commit()
@@ -151,13 +152,19 @@ def create_subcategory(payload: ExpenseSubCategoryCreate, db: Session = Depends(
 def list_subcategories(
         category_id: Optional[int] = Query(default=None, description="Filter by category_id"),
         is_active: Optional[bool] = Query(default=None, description="Filter by active status"),
+        payment_type: Optional[PaymentType] = Query(default=None, description="Filter by payment type (DEBIT/CREDIT)"),
+        # ✅ NEW
         db: Session = Depends(get_db),
 ):
     q = db.query(ExpenseSubCategory)
+
     if category_id is not None:
         q = q.filter(ExpenseSubCategory.category_id == category_id)
     if is_active is not None:
         q = q.filter(ExpenseSubCategory.is_active == is_active)
+    if payment_type is not None:
+        q = q.filter(ExpenseSubCategory.payment_type == payment_type)  # ✅ NEW
+
     return q.order_by(ExpenseSubCategory.subcategory_name.asc()).all()
 
 
@@ -213,6 +220,9 @@ def update_subcategory(subcategory_id: int, payload: ExpenseSubCategoryUpdate, d
 
     if payload.is_active is not None:
         sub.is_active = payload.is_active
+
+    if payload.payment_type is not None:
+        sub.payment_type = payload.payment_type  # ✅ NEW
 
     db.commit()
     db.refresh(sub)

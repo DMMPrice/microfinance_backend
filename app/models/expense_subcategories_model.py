@@ -11,15 +11,30 @@ from sqlalchemy import (
 )
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
-
+import enum
+from sqlalchemy.dialects.postgresql import ENUM as PGEnum
 from app.utils.database import Base
 
+class PaymentType(str, enum.Enum):
+    DEBIT = "DEBIT"
+    CREDIT = "CREDIT"
 
 class ExpenseSubCategory(Base):
     __tablename__ = "expense_subcategories"
 
     subcategory_id = Column(Integer, primary_key=True, index=True)
 
+    payment_type_enum = PGEnum(
+        PaymentType,
+        name="payment_type_enum",
+        create_type=False,  # already created in DB
+    )
+
+    payment_type = Column(
+        payment_type_enum,
+        nullable=False,
+        server_default="DEBIT",
+    )
     category_id = Column(
         Integer,
         ForeignKey(
