@@ -7,6 +7,7 @@ from typing import Optional
 from sqlalchemy.exc import IntegrityError
 from starlette import status
 
+from app.models.loan_charge_model import LoanCharge
 from app.utils.database import get_db
 from app.models.loan_model import Loan
 from app.models.loan_installment_model import LoanInstallment
@@ -535,13 +536,12 @@ def create_loan(payload: LoanCreate, db: Session = Depends(get_db)):
 
     # ✅ Interest Rate from DB (TENURE FLAT)
     interest_rate = get_setting_decimal(db, "INTEREST_RATE", "0")  # 12.5
-    interest_total = compute_interest_tenure_flat(principal, interest_rate)  # ✅ 2750 for 22000
+    interest_total = compute_interest_tenure_flat(principal, interest_rate)
 
-    # ✅ Fees from DB as % of principal + fixed book price
+    # ✅ Fees from DB
     insurance_fee, processing_fee, book_price, fees_total = compute_fees_from_settings(db, principal)
-    # for 22000: insurance=220, processing=660, book=40 => fees_total=920
 
-    # ✅ total outstanding includes fees because collected in installment 1
+    # ✅ Total outstanding includes interest + fees (fees collected in inst #1)
     total = money(principal + interest_total + fees_total)
 
     # ✅ weekly base installment excludes fees
@@ -549,7 +549,7 @@ def create_loan(payload: LoanCreate, db: Session = Depends(get_db)):
         principal=principal,
         interest_total=interest_total,
         duration_weeks=payload.duration_weeks,
-        fees_total=fees_total,  # ✅ important
+        fees_total=fees_total,
     )
 
     loan = Loan(
@@ -566,8 +566,8 @@ def create_loan(payload: LoanCreate, db: Session = Depends(get_db)):
         installment_type="WEEKLY",
         principal_amount=principal,
         interest_amount_total=interest_total,
-        total_disbursed_amount=total,
-        installment_amount=base_installment,  # base weekly (without fees)
+        total_disbursed_amount=total,          # ✅ you intentionally treat this as total outstanding
+        installment_amount=base_installment,   # base weekly (without fees)
         min_weeks_before_closure=min_weeks,
         allow_early_closure=False,
         advance_balance=money(0),
@@ -576,8 +576,36 @@ def create_loan(payload: LoanCreate, db: Session = Depends(get_db)):
 
     try:
         db.add(loan)
-        db.flush()
+        db.flush()  # ✅ loan_id available here
 
+        # =========================================================
+        # ✅ NEW: Record charges in loan_charges (for group log/report)
+        # =========================================================
+        charge_dt = datetime.combine(payload.disburse_date, datetime.min.time())
+
+        def add_charge(charge_type: str, amt: Decimal, remark: str):
+            amt = money(amt)
+            if amt <= 0:
+                return
+            db.add(
+                LoanCharge(
+                    loan_id=loan.loan_id,
+                    charge_type=charge_type,
+                    charge_date=charge_dt,
+                    amount=amt,
+                    is_waived=False,
+                    waived_amount=money(0),
+                    remarks=remark,
+                )
+            )
+
+        add_charge("INSURANCE_FEE", insurance_fee, "Insurance fee (collected in 1st installment)")
+        add_charge("PROCESSING_FEE", processing_fee, "Processing fee (collected in 1st installment)")
+        add_charge("BOOK_PRICE", book_price, "Book price (collected in 1st installment)")
+
+        # =========================================================
+        # ✅ Installment schedule creation
+        # =========================================================
         due = payload.first_installment_date
         for i in range(1, payload.duration_weeks + 1):
             extra = first_extra if i == 1 else money(0)
@@ -599,7 +627,9 @@ def create_loan(payload: LoanCreate, db: Session = Depends(get_db)):
             )
             due += timedelta(days=7)
 
-        # ✅ ledger interest component includes fees since outstanding includes fees
+        # =========================================================
+        # ✅ Ledger entry (your current logic kept)
+        # =========================================================
         db.add(
             LoanLedger(
                 loan_id=loan.loan_id,
@@ -625,8 +655,10 @@ def create_loan(payload: LoanCreate, db: Session = Depends(get_db)):
                 status_code=status.HTTP_409_CONFLICT,
                 detail="This member already has an active loan. Please close the existing loan before creating a new one.",
             )
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                            detail="Unable to create loan due to database constraints.")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unable to create loan due to database constraints.",
+        )
     except Exception:
         db.rollback()
         raise
