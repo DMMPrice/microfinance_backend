@@ -19,7 +19,10 @@ class UserCreate(BaseModel):
     is_active: bool = True
 
     employee_code: Optional[str] = None
+
+    # ✅ keep optional (backend can auto-fill if not sent)
     date_joined: Optional[date] = None
+
     notes: Optional[str] = None
 
 
@@ -51,4 +54,8 @@ class UserUpdate(BaseModel):
     is_active: Optional[bool] = None
 
     employee_code: Optional[str] = None
+
+    # ✅ ADD THIS (this fixes your 500 error)
+    date_joined: Optional[date] = None
+
     notes: Optional[str] = None

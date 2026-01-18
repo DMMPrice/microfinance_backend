@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import jwt
 
 from app.utils.database import get_db
@@ -91,7 +91,7 @@ def register_user(payload: UserCreate, db: Session = Depends(get_db)):
         region_id=region_id,
         branch_id=branch_id,
         employee_code=payload.employee_code,
-        date_joined=payload.date_joined,
+        date_joined=payload.date_joined or date.today(),
         notes=payload.notes,
         is_active=payload.is_active,
     )

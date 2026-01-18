@@ -1,7 +1,16 @@
 # app/models/employee_model.py
-from sqlalchemy import Column, Integer, String, Boolean, Date, Text, ForeignKey, DateTime
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Boolean,
+    Date,
+    Text,
+    ForeignKey,
+    DateTime,
+    func,  # ✅ added
+)
 from sqlalchemy.orm import relationship
-from datetime import datetime
 from app.utils.database import Base
 
 
@@ -19,11 +28,16 @@ class Employee(Base):
     branch_id = Column(Integer, ForeignKey("branches.branch_id"), nullable=True)
 
     employee_code = Column(String(50), unique=True)
-    date_joined = Column(Date)
+
+    # ✅ DB sets CURRENT_DATE automatically
+    date_joined = Column(Date, nullable=False, server_default=func.current_date())
+
     notes = Column(Text)
 
     is_active = Column(Boolean, default=True)
-    created_on = Column(DateTime, default=datetime.utcnow)
+
+    # ✅ better: DB timestamp instead of python datetime.utcnow
+    created_on = Column(DateTime, nullable=False, server_default=func.now())
 
     user = relationship("User", back_populates="employee")
     role = relationship("Role", back_populates="employees")
