@@ -134,20 +134,26 @@ def get_loan_officer(
 # ===========================
 
 @router.delete("/{lo_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_loan_officer(
-        lo_id: int,
-        db: Session = Depends(get_db),
-):
-    """
-    Delete a Loan Officer record.
-    (No token/RBAC checks here — enforce authorization elsewhere if needed.)
-    """
-
-    lo = db.query(LoanOfficer).filter(LoanOfficer.lo_id == lo_id).first()
+def delete_loan_officer(lo_id: int, db: Session = Depends(get_db)):
+    lo = (
+        db.query(LoanOfficer)
+        .options(joinedload(LoanOfficer.employee).joinedload(Employee.user))
+        .filter(LoanOfficer.lo_id == lo_id)
+        .first()
+    )
     if not lo:
         raise HTTPException(status_code=404, detail="Loan Officer not found")
 
-    db.delete(lo)
+    emp = lo.employee
+    user = emp.user if emp else None
+
+    # ✅ delete in correct order
+    db.delete(lo)  # child
+    if emp:
+        db.delete(emp)  # parent of loan_officer
+    if user:
+        db.delete(user)  # top-level parent
+
     db.commit()
     return
 
