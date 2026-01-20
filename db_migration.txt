@@ -1,0 +1,11 @@
+✅ Run these in Command Prompt (as Administrator is fine)
+1) Drop DB
+"C:\Program Files\PostgreSQL\18\bin\dropdb.exe" -h localhost -p 5432 -U postgres microfinance
+2) Create DB again
+"C:\Program Files\PostgreSQL\18\bin\createdb.exe" -h localhost -p 5432 -U postgres microfinance
+3) Restore the SQL
+"C:\Program Files\PostgreSQL\18\bin\psql.exe" -h localhost -p 5432 -U postgres -d microfinance -f "C:\Users\Aniruddh\Downloads\microfinance_backup_20260119_185135.sql"
+
+If “dropdb” fails because someone is connected
+Run this first (kills active connections), then re-run dropdb:
+"C:\Program Files\PostgreSQL\18\bin\psql.exe" -h localhost -p 5432 -U postgres -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='microfinance' AND pid <> pg_backend_pid();"

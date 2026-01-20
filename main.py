@@ -24,7 +24,7 @@ from app.routers import (
     reports_router,
     expense_master_router,
     branch_expenses_router,
-    db_maintenance
+    db_maintenance_router
 )
 
 app = FastAPI(title="Microfinance Backend API", version="1.0")
@@ -55,7 +55,7 @@ app.include_router(settings_router.router)
 app.include_router(reports_router.router)
 app.include_router(expense_master_router.router)
 app.include_router(branch_expenses_router.router)
-app.include_router(db_maintenance.router)
+app.include_router(db_maintenance_router.router)
 
 
 @app.on_event("startup")
