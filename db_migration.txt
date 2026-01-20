@@ -1,4 +1,16 @@
 ✅ Run these in Command Prompt (as Administrator is fine)
+Create User:
+CREATE USER akota WITH PASSWORD 'Akota@123';
+GRANT CONNECT ON DATABASE microfinance TO akota;
+GRANT USAGE ON SCHEMA public TO akota;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO akota;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO akota;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+GRANT ALL PRIVILEGES ON TABLES TO akota;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+GRANT ALL PRIVILEGES ON SEQUENCES TO akota;
+psql -h localhost -U akota -d microfinance
+✅ To Restore from SQL Backup:
 1) Drop DB
 "C:\Program Files\PostgreSQL\18\bin\dropdb.exe" -h localhost -p 5432 -U postgres microfinance
 2) Create DB again

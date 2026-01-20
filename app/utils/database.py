@@ -36,11 +36,11 @@ DB_NAME = os.getenv("DB_NAME", "microfinance")
 DB_USER = os.getenv("DB_USER", "admin")
 DB_PASS = os.getenv("DB_PASS", "Powercasting2025")
 
-# DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
-# DB_PORT = os.getenv("DB_PORT", "5432")
-# DB_NAME = os.getenv("DB_NAME", "microfinance")
-# DB_USER = os.getenv("DB_USER", "postgres")
-# DB_PASS = os.getenv("DB_PASS", "Babai%406157201")
+# DB_HOST = "127.0.0.1"
+# DB_PORT = "5432"
+# DB_NAME = "microfinance"
+# DB_USER = "postgres"
+# DB_PASS = "Babai%406157201"
 
 # 🛡️ Fix the None / empty / "None" port issue permanently
 if not DB_PORT or str(DB_PORT).lower() == "none":
