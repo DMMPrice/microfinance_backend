@@ -321,13 +321,17 @@ def delete_user(user_id: int, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(404, "User not found")
 
-    # Because Employee.user_id has ON DELETE CASCADE
-    # and LoanOfficer.employee_id has ON DELETE CASCADE,
-    # deleting user will cascade to employee and loan_officer.
+    # delete employee row first (and any related rows)
+    emp = db.query(Employee).filter(Employee.user_id == user_id).first()
+    if emp:
+        # if loan officer depends on employee_id, delete it too (if no DB cascade there)
+        db.query(LoanOfficer).filter(LoanOfficer.employee_id == emp.employee_id).delete()
+        db.delete(emp)
+
     db.delete(user)
     db.commit()
-
     return {"message": "User deleted successfully"}
+
 
 @router.get("/users")
 def list_users(db: Session = Depends(get_db)):

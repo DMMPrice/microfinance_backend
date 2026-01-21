@@ -18,7 +18,8 @@ class Employee(Base):
     __tablename__ = "employees"
 
     employee_id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.user_id"), unique=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
+    user = relationship("User", back_populates="employee")
 
     full_name = Column(String(150), nullable=False)
     phone = Column(String(20))
@@ -39,7 +40,6 @@ class Employee(Base):
     # ✅ better: DB timestamp instead of python datetime.utcnow
     created_on = Column(DateTime, nullable=False, server_default=func.now())
 
-    user = relationship("User", back_populates="employee")
     role = relationship("Role", back_populates="employees")
     region = relationship("Region", back_populates="employees")
     branch = relationship("Branch", back_populates="employees")

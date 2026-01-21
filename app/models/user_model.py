@@ -15,4 +15,9 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     created_on = Column(DateTime, default=datetime.utcnow)
 
-    employee = relationship("Employee", back_populates="user", uselist=False)
+    employee = relationship(
+        "Employee",
+        back_populates="user",
+        uselist=False,
+        passive_deletes=True,  # IMPORTANT
+    )
