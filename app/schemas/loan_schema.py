@@ -1,33 +1,45 @@
 from pydantic import BaseModel, Field, field_validator, constr
 from datetime import date, datetime
-from typing import Optional, Literal
+from typing import Optional, Literal, Dict
 from decimal import Decimal
 
+# -------------------------------------------------
+# Helpers
+# -------------------------------------------------
+MoneyDecimal = Decimal
 
+
+# -------------------------------------------------
+# Loan Create / Update
+# -------------------------------------------------
 class LoanCreate(BaseModel):
     member_id: int
     product_id: Optional[int] = None
-    loan_account_no: Optional[str] = None
+
+    loan_account_no: Optional[constr(strip_whitespace=True, min_length=3, max_length=50)] = None
 
     disburse_date: date
     first_installment_date: date
 
-    principal_amount: float = Field(gt=0)
+    principal_amount: Decimal = Field(gt=0)
     duration_weeks: int = Field(gt=0)
 
-    # ✅ frontend sends fees (first installment contains this)
-    insurance_fee: float = Field(default=0, ge=0)
-    processing_fee: float = Field(default=0, ge=0)
+    # ✅ OPTIONAL (frontend may send), but backend can compute from settings if 0/None
+    insurance_fee: Decimal = Field(default=0, ge=0)
+    processing_fee: Decimal = Field(default=0, ge=0)
+    book_price: Decimal = Field(default=0, ge=0)
 
-    # ❌ interest_total is NOT sent from frontend anymore
-    # backend will compute it from default setting INTEREST_RATE and WEEK_DIVIDER
+    @field_validator("loan_account_no", mode="before")
+    def empty_loan_acc_to_none(cls, v):
+        if v is None:
+            return None
+        v = str(v).strip()
+        return v or None
 
 
 class LoanUpdate(BaseModel):
-    # editable identifiers
     loan_account_no: Optional[constr(strip_whitespace=True, min_length=3, max_length=50)] = None
 
-    # core loan terms (allow only when NO payments exist)
     product_id: Optional[int] = None
     disburse_date: Optional[date] = None
     first_installment_date: Optional[date] = None
@@ -37,9 +49,10 @@ class LoanUpdate(BaseModel):
     # ✅ fees editable only if no payment exists (optional)
     insurance_fee: Optional[Decimal] = None
     processing_fee: Optional[Decimal] = None
+    book_price: Optional[Decimal] = None
 
-    # optional status update
-    status: Optional[str] = None  # DISBURSED/ACTIVE/CLOSED/CANCELLED/INACTIVE
+    # DISBURSED / ACTIVE / PAUSED / CLOSED / CANCELLED / INACTIVE
+    status: Optional[str] = None
 
 
 class LoanOut(BaseModel):
@@ -75,16 +88,19 @@ class InstallmentOut(BaseModel):
     interest_paid: float
     total_paid: float
 
-    status: str
+    status: str  # PENDING / OVERDUE / PAID
     paid_date: Optional[date] = None
 
     class Config:
         from_attributes = True
 
 
+# -------------------------------------------------
+# Payment
+# -------------------------------------------------
 class PaymentCreate(BaseModel):
     payment_date: Optional[datetime] = None
-    amount_received: float = Field(gt=0)
+    amount_received: Decimal = Field(gt=0)
     payment_mode: Literal["CASH", "UPI", "BANK", "CARD", "OTHER"] = "CASH"
     receipt_no: Optional[str] = None
     remarks: Optional[str] = None
@@ -107,12 +123,77 @@ class PaymentResult(BaseModel):
 class CollectionPaymentCreate(BaseModel):
     loan_id: int
     payment_date: Optional[datetime] = None
-    amount_received: float = Field(gt=0)
+    amount_received: Decimal = Field(gt=0)
     payment_mode: Literal["CASH", "UPI", "BANK", "CARD", "OTHER"] = "CASH"
     receipt_no: Optional[str] = None
     remarks: Optional[str] = None
 
+    @field_validator("receipt_no", "remarks", mode="before")
+    def empty_to_none(cls, v):
+        if v is None:
+            return None
+        v = str(v).strip()
+        return v or None
 
+
+# -------------------------------------------------
+# Charge Collection (Manual)
+# -------------------------------------------------
+class ChargeCollectCreate(BaseModel):
+    """
+    ✅ Manual fee collection window:
+    - Collect any one charge (insurance/processing/book) or a generic CHARGE amount.
+    - Keeps records in LoanCharge + LoanLedger.
+    """
+    charge_type: Literal["INSURANCE_FEE", "PROCESSING_FEE", "BOOK_PRICE", "OTHER"] = "OTHER"
+
+    payment_date: Optional[datetime] = None
+    amount_received: Decimal = Field(gt=0)
+    payment_mode: Literal["CASH", "UPI", "BANK", "CARD", "OTHER"] = "CASH"
+    receipt_no: Optional[str] = None
+    remarks: Optional[str] = None
+
+    @field_validator("receipt_no", "remarks", mode="before")
+    def empty_to_none(cls, v):
+        if v is None:
+            return None
+        v = str(v).strip()
+        return v or None
+
+
+class ChargeCollectResult(BaseModel):
+    collected: float
+
+    # ✅ can be single number or a breakdown (keep both optional)
+    pending_charges: float = 0.0
+    pending_breakdown: Optional[Dict[str, float]] = None
+
+
+class ChargeOut(BaseModel):
+    charge_id: int
+    loan_id: int
+    charge_type: str
+
+    amount: float
+    is_waived: bool
+    waived_amount: float
+
+    collected_amount: float
+    is_collected: bool
+    collected_on: Optional[datetime] = None
+    payment_mode: Optional[str] = None
+    receipt_no: Optional[str] = None
+
+    remarks: Optional[str] = None
+    charge_date: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+# -------------------------------------------------
+# Ledger / Summary / Master
+# -------------------------------------------------
 class LedgerRowOut(BaseModel):
     ledger_id: int
     txn_date: datetime
@@ -150,6 +231,12 @@ class LoanSummaryOut(BaseModel):
     next_due_date: Optional[date] = None
     next_due_amount: Optional[float] = None
 
+    # ✅ Charges snapshot
+    charges_total: float = 0.0
+    charges_waived: float = 0.0
+    charges_collected: float = 0.0
+    charges_pending: float = 0.0
+
 
 class LoanListOut(BaseModel):
     loan_id: int
@@ -157,10 +244,12 @@ class LoanListOut(BaseModel):
     member_id: int
     group_id: int
     lo_id: int
+
     principal_amount: float
     total_disbursed_amount: float
     installment_amount: float
     duration_weeks: int
+
     status: str
     disburse_date: date
     first_installment_date: date

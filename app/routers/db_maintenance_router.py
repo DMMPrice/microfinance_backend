@@ -4,7 +4,7 @@ import tempfile
 import shutil
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Depends
+from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, Form
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field
 
@@ -52,7 +52,7 @@ def run_cmd(cmd, env):
 
 
 # ------------------------------
-# BACKUP
+# BACKUP (uses database.py creds)
 # ------------------------------
 @router.post("/backup", dependencies=SECURITY)
 def backup_database():
@@ -66,7 +66,7 @@ def backup_database():
     tmp.close()
 
     env = os.environ.copy()
-    env["PGPASSWORD"] = DB_PASS  # ✅ RAW PASSWORD
+    env["PGPASSWORD"] = DB_PASS
 
     cmd = [
         PG_DUMP,
@@ -98,10 +98,17 @@ def backup_database():
 
 
 # ------------------------------
-# RESTORE
+# RESTORE (user provides creds + sql)
 # ------------------------------
 @router.post("/restore", dependencies=SECURITY)
-async def restore_database(sql_file: UploadFile = File(...)):
+async def restore_database(
+        db_host: str = Form(...),
+        db_port: int = Form(5432),
+        db_name: str = Form(...),
+        db_user: str = Form(...),
+        db_pass: str = Form(...),
+        sql_file: UploadFile = File(...),
+):
     _assert_tools()
 
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".sql")
@@ -113,26 +120,36 @@ async def restore_database(sql_file: UploadFile = File(...)):
             f.write(await sql_file.read())
 
         env = os.environ.copy()
-        env["PGPASSWORD"] = DB_PASS
+        env["PGPASSWORD"] = db_pass  # ✅ USER PROVIDED PASSWORD
 
         cmd = [
             PSQL,
-            "-h", DB_HOST,
-            "-p", DB_PORT,
-            "-U", DB_USER,
-            "-d", DB_NAME,
+            "-h", db_host,
+            "-p", str(db_port),
+            "-U", db_user,
+            "-d", db_name,
             "-v", "ON_ERROR_STOP=1",
             "-f", tmp_path,
         ]
 
         run_cmd(cmd, env)
-        return JSONResponse({"message": "restore completed"})
+
+        return JSONResponse({
+            "message": "restore completed",
+            "target": {
+                "host": db_host,
+                "port": db_port,
+                "db": db_name,
+                "user": db_user
+            }
+        })
+
     finally:
         os.remove(tmp_path)
 
 
 # ------------------------------
-# CLONE
+# CLONE (source from database.py → dest from payload)
 # ------------------------------
 class DestinationDB(BaseModel):
     dest_host: str
@@ -189,5 +206,6 @@ def clone_database(payload: DestinationDB):
         run_cmd(restore_cmd, env_dest)
 
         return {"message": "clone completed"}
+
     finally:
         os.remove(tmp_path)
