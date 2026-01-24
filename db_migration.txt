@@ -37,3 +37,10 @@ psql -h localhost -U akota -d microfinance
 If “dropdb” fails because someone is connected
 Run this first (kills active connections), then re-run dropdb:
 "C:\Program Files\PostgreSQL\18\bin\psql.exe" -h localhost -p 5432 -U postgres -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='microfinance' AND pid <> pg_backend_pid();"
+
+
+# DB_HOST = "72.61.174.109"
+# DB_PORT = "5432"
+# DB_NAME = "microfinance"
+# DB_USER = "admin"
+# DB_PASS = "Powercasting2025"
